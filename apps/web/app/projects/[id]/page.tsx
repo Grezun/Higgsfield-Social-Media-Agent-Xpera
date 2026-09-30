@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { JobPanel } from "@/components/JobPanel";
 import { ReelPreview } from "@/components/ReelPreview";
 import { StoryboardEditor } from "@/components/StoryboardEditor";
+import { canRetryGenerate } from "@/lib/retry-visibility";
 import { getProjectView } from "@/lib/queries";
 import { signRender, supabaseSigningClient } from "@/lib/render-urls";
 import { checkStoryboard } from "@/lib/storyboard-edit";
@@ -16,10 +17,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   if (!view) notFound();
   const { project, storyboard, job } = view;
   const parsed = storyboard ? checkStoryboard(storyboard.json) : null;
-  const canRetry =
-    storyboard?.status === "approved" &&
-    !(job && (job.status === "queued" || job.status === "running")) &&
-    !(job?.type === "generate" && job.status === "done");
+  const canRetry = storyboard ? canRetryGenerate(storyboard, job) : false;
   const sceneIds = parsed?.ok ? parsed.storyboard.scenes.filter((s) => s.visual.kind !== "graphic").map((s) => s.id) : [];
   const signed =
     view.render && project.status === "rendered"
@@ -46,7 +44,11 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         />
       )}
       {storyboard && parsed && !parsed.ok && <p className="error">This storyboard can't be displayed: {parsed.errors.join("; ")}</p>}
-      {!storyboard && <p className="muted">Claude is writing the storyboard…</p>}
+      {!storyboard && (
+        project.status === "failed"
+          ? <p className="error">Planning failed. Start a new reel from the Reels list.</p>
+          : <p className="muted">Claude is writing the storyboard…</p>
+      )}
     </main>
   );
 }

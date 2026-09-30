@@ -25,7 +25,7 @@ const GENERATE_HEADLINES: Record<string, [string, ProgressView["tone"]]> = {
   queued: ["Queued: waiting for a worker…", "info"],
   running: ["Generating your reel…", "info"],
   done: ["Your reel is ready.", "success"],
-  needs_attention: ["Some scenes failed: fix their prompts, then retry. Finished scenes won't be charged again.", "warning"],
+  needs_attention: ["Some scenes failed. Use “Edit as new version”, fix their prompts, then approve again — finished scenes won't be charged again.", "warning"],
   failed: ["Generation failed.", "error"],
 };
 

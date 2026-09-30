@@ -3,6 +3,7 @@ import type { JobRow } from "@reel/db";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { describeJob } from "@/lib/progress-view";
+import { newerJob } from "@/lib/newer-job";
 import { createClient } from "@/lib/supabase/client";
 
 type JobLite = Pick<JobRow, "id" | "type" | "status" | "progress" | "error" | "created_at">;
@@ -23,9 +24,22 @@ export function JobPanel({ projectId, initialJob, sceneIds }: { projectId: strin
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs", filter: `project_id=eq.${projectId}` }, (payload) => {
         const row = payload.new as Partial<JobLite>;
         if (!row?.id || !row.created_at) return;
-        setJob((prev) => (!prev || row.created_at! >= prev.created_at ? (row as JobLite) : prev));
+        setJob((prev) => newerJob(prev, row as JobLite));
       })
-      .subscribe();
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          const { data } = await supabase
+            .from("jobs")
+            .select("id, type, status, progress, error, created_at")
+            .eq("project_id", projectId)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (data) setJob((prev) => newerJob(prev, data as JobLite));
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.warn(`live updates unavailable (${status}); refresh to see progress`);
+        }
+      });
     return () => {
       supabase.removeChannel(channel);
     };
