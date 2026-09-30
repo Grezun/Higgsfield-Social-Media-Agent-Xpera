@@ -1,70 +1,39 @@
-import { config as loadEnv } from "dotenv";
-import {
-  config,
-  higgsfield,
-  HiggsfieldError,
-  APIError,
-  TimeoutError,
-} from "@higgsfield/client/v2";
+import { probe } from "@reel/media";
+import { mkdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { loadConfig, loadEnvFile, REPO_ROOT } from "../src/config";
+import { contentTypeFor, downloadTo, extFromUrl } from "../src/download";
+import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen, sdkSubscribe } from "../src/providers/higgsfield";
 
-// Load HF_CREDENTIALS from .env.local (server-side only; never logged).
-loadEnv({ path: ".env.local", quiet: true });
-
-if (!process.env.HF_CREDENTIALS) {
-  console.error("HF_CREDENTIALS is not set. Add it to .env.local as key-id:key-secret.");
+// Checks image → upload → image-to-video end to end (spends a few credits).
+loadEnvFile();
+const config = loadConfig();
+const credentials = config.higgsfield.credentials;
+if (!credentials) {
+  console.error("HF_CREDENTIALS is not set in .env.local (format key-id:key-secret)");
   process.exit(1);
 }
+const outDir = join(REPO_ROOT, "work", "smoke");
+await mkdir(outDir, { recursive: true });
+const gateway = new HiggsfieldGateway(sdkSubscribe(credentials), 1);
 
-config({
-  credentials: process.env.HF_CREDENTIALS,
-  // Video generation can take several minutes; the SDK default is 5 minutes.
-  maxPollTime: 15 * 60 * 1000,
+const image = await new HiggsfieldImageGen(gateway, config.higgsfield.imageModel).generate({
+  prompt: "A barista pouring latte art, warm morning light, close-up, vertical 9:16 framing",
 });
+const imageFile = join(outDir, `image.${extFromUrl(image.url, "png")}`);
+await downloadTo(image.url, imageFile);
+const imageInfo = await probe(imageFile);
+console.log(`image ${image.requestId}: ${imageInfo.video?.width}×${imageInfo.video?.height} → ${imageFile}`);
 
-async function main() {
-  const result = await higgsfield.subscribe("bytedance/seedance-2.5/text-to-video", {
-    input: {
-      prompt: "A cinematic scene at sunset",
-      duration: 5,
-      resolution: "720p",
-      aspect_ratio: "16:9",
-    },
-    withPolling: true,
-  });
+const publicUrl = await new HiggsfieldUploader(credentials, config.higgsfield.baseUrl).upload(await readFile(imageFile), contentTypeFor(imageFile));
+console.log(`uploaded → ${publicUrl}`);
 
-  // The SDK types list queued/in_progress/completed/failed/nsfw, but the API
-  // may also report canceled, so compare as a plain string.
-  const status: string = result.status;
-
-  if (status === "completed" && result.video?.url) {
-    console.log(`Request ${result.request_id} completed.`);
-    console.log(`Video URL: ${result.video.url}`);
-    return;
-  }
-
-  if (status === "nsfw") {
-    console.error(`Request ${result.request_id} was blocked by content moderation.`);
-  } else if (status === "failed") {
-    console.error(`Request ${result.request_id} failed.`);
-  } else if (status === "canceled" || status === "cancelled") {
-    console.error(`Request ${result.request_id} was canceled.`);
-  } else if (status === "completed") {
-    console.error(`Request ${result.request_id} completed but returned no video URL.`);
-  } else {
-    console.error(`Request ${result.request_id} ended with unexpected status "${status}".`);
-  }
-  process.exitCode = 1;
-}
-
-main().catch((err: unknown) => {
-  if (err instanceof TimeoutError) {
-    console.error(`Timed out waiting for the generation: ${err.message}`);
-  } else if (err instanceof APIError) {
-    console.error(`Higgsfield API error (${err.name}): ${err.message}`);
-  } else if (err instanceof HiggsfieldError) {
-    console.error(`Higgsfield SDK error (${err.name}): ${err.message}`);
-  } else {
-    console.error("Unexpected error:", err instanceof Error ? err.message : err);
-  }
-  process.exitCode = 1;
+const video = await new HiggsfieldVideoGen(gateway, config.higgsfield.videoModel, config.higgsfield.videoResolution).imageToVideo({
+  imageUrl: publicUrl,
+  prompt: "slow push-in, steam rising from the cup",
+  durationSec: 4,
 });
+const videoFile = join(outDir, "video.mp4");
+await downloadTo(video.url, videoFile);
+const v = await probe(videoFile);
+console.log(`video ${video.requestId}: ${v.video?.width}×${v.video?.height} @ ${v.video?.fps.toFixed(2)} fps, ${v.durationSec.toFixed(2)} s, audio: ${v.audio ? "PRESENT (unexpected)" : "none"} → ${videoFile}`);
