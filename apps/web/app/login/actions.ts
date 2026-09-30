@@ -1,4 +1,5 @@
 "use server";
+import { signInRedirectUrl } from "@/lib/site-url";
 import { createClient } from "@/lib/supabase/server";
 
 export type LoginState = { error?: string; sent?: boolean };
@@ -7,11 +8,12 @@ export async function sendMagicLink(_prev: LoginState, formData: FormData): Prom
   const email = String(formData.get("email") ?? "").trim();
   if (!/^\S+@\S+\.\S+$/.test(email)) return { error: "Enter a valid email address." };
   const siteUrl = process.env.SITE_URL;
-  if (!siteUrl) return { error: "Sign-in is not configured (SITE_URL missing)." };
+  const redirectTo = signInRedirectUrl(siteUrl);
+  if (!redirectTo) return { error: "Sign-in is not configured (SITE_URL missing)." };
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { shouldCreateUser: false, emailRedirectTo: `${siteUrl.replace(/\/$/, "")}/auth/confirm` },
+    options: { shouldCreateUser: false, emailRedirectTo: redirectTo },
   });
   if (error) return { error: "We couldn't send a sign-in link. This app is invite-only: ask an admin to invite your email." };
   return { sent: true };

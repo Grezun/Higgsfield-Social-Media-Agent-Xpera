@@ -4,5 +4,6 @@ export function safeNextPath(raw: string | null | undefined): string {
   let url: URL;
   try { url = new URL(raw, "http://local.invalid"); } catch { return "/"; }
   if (url.origin !== "http://local.invalid") return "/";
-  return `${url.pathname}${url.search}${url.hash}`;
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  return path.startsWith("//") ? "/" : path;
 }

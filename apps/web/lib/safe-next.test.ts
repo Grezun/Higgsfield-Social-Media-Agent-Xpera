@@ -8,7 +8,7 @@ describe("safeNextPath", () => {
   it("keeps encoded slashes as a same-site path", () => {
     expect(safeNextPath("/%2F%2Fevil.example")).toBe("/%2F%2Fevil.example");
   });
-  it.each([null, undefined, "", "//evil.example", "/\\evil.example", "https://evil.example", "javascript:alert(1)", "projects", "/\t/evil.example", "/\n/evil.example", "/ /x"])(
+  it.each([null, undefined, "", "//evil.example", "/\\evil.example", "https://evil.example", "javascript:alert(1)", "projects", "/\t/evil.example", "/\n/evil.example", "/ /x", "/.//evil.example", "/..//evil.example", "/a/..//evil.example", "/%2e//evil.example", "/%2e%2e//evil.example"])(
     "falls back to / for %s",
     (raw) => {
       expect(safeNextPath(raw)).toBe("/");
