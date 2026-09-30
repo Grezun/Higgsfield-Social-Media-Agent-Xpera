@@ -13,6 +13,7 @@ create table public.projects (
   updated_at timestamptz not null default now()
 );
 create index projects_updated_idx on public.projects (updated_at desc);
+create index projects_owner_idx on public.projects (owner_id);
 
 create table public.storyboards (
   id uuid primary key default gen_random_uuid(),
@@ -57,6 +58,9 @@ create table public.jobs (
 );
 create index jobs_queued_idx on public.jobs (created_at) where status = 'queued';
 create index jobs_project_idx on public.jobs (project_id, created_at desc);
+-- At most one queued/running job per reel (stops double-click/two-tab duplicates; requeue keeps a job inside the set).
+create unique index jobs_one_active_per_project on public.jobs (project_id) where status in ('queued', 'running');
+create index jobs_created_by_idx on public.jobs (created_by);
 
 create table public.renders (
   id uuid primary key default gen_random_uuid(),
@@ -70,6 +74,7 @@ create table public.renders (
   created_at timestamptz not null default now()
 );
 create index renders_project_idx on public.renders (project_id, created_at desc);
+create index renders_storyboard_idx on public.renders (storyboard_id);
 
 -- updated_at maintenance
 create function public.touch_updated_at() returns trigger
@@ -107,6 +112,15 @@ create policy "team queues jobs" on public.jobs for insert to authenticated
 
 create policy "team reads renders" on public.renders for select to authenticated using (true);
 
+-- Column-level privileges: signed-in users may only write the columns the web app writes.
+revoke update on public.projects from authenticated;
+grant update (title, status) on public.projects to authenticated;
+revoke update on public.storyboards from authenticated;
+grant update (json, status) on public.storyboards to authenticated;
+revoke insert on public.jobs from authenticated;
+grant insert (project_id, type, payload) on public.jobs to authenticated;
+revoke all on public.projects, public.storyboards, public.assets, public.jobs, public.renders from anon;
+
 -- Storage: private buckets; signed-in users may read (sign URLs), only the worker writes.
 insert into storage.buckets (id, name, public)
 values ('assets', 'assets', false), ('renders', 'renders', false)
@@ -123,27 +137,34 @@ language plpgsql security definer set search_path = '' as $$
 begin
   return query
   update public.jobs j
-     set status = 'running', locked_by = p_worker, started_at = now(), heartbeat_at = now(), attempts = j.attempts + 1
+     set status = 'running', locked_by = p_worker, started_at = now(), heartbeat_at = now(),
+         finished_at = null, error = null, attempts = j.attempts + 1
    where j.id = (
      select q.id from public.jobs q
       where q.status = 'queued'
       order by q.created_at
       for update skip locked
       limit 1)
+     and j.status = 'queued'
   returning j.*;
 end $$;
 
-create function public.requeue_stale_jobs(p_stale_seconds int default 120) returns int
+create function public.requeue_stale_jobs(p_stale_seconds int default 120, p_max_attempts int default 3) returns int
 language sql security definer set search_path = '' as $$
   with stale as (
     update public.jobs
-       set status = 'queued', locked_by = null
-     where status = 'running' and heartbeat_at < now() - make_interval(secs => p_stale_seconds)
+       set status      = case when attempts >= p_max_attempts then 'failed' else 'queued' end,
+           locked_by   = null,
+           error       = case when attempts >= p_max_attempts
+                              then 'worker stopped responding ' || attempts || ' times; giving up' else error end,
+           finished_at = case when attempts >= p_max_attempts then now() else null end
+     where status = 'running'
+       and coalesce(heartbeat_at, started_at, created_at) < now() - make_interval(secs => p_stale_seconds)
     returning 1)
   select count(*)::int from stale;
 $$;
 
 revoke execute on function public.claim_job(text) from public, anon, authenticated;
-revoke execute on function public.requeue_stale_jobs(int) from public, anon, authenticated;
+revoke execute on function public.requeue_stale_jobs(int, int) from public, anon, authenticated;
 grant execute on function public.claim_job(text) to service_role;
-grant execute on function public.requeue_stale_jobs(int) to service_role;
+grant execute on function public.requeue_stale_jobs(int, int) to service_role;
