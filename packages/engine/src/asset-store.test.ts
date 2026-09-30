@@ -31,7 +31,35 @@ describe("FileAssetStore", () => {
   });
 });
 
+describe("FileAssetStore corruption", () => {
+  it("treats truncated metadata JSON as a miss and recovers on the next putFile", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "store-"));
+    const src = join(dir, "a.wav");
+    await writeFile(src, "x");
+    const store = new FileAssetStore(join(dir, "cache"));
+    await store.putFile("h", src, "wav", { kind: "audio", provider: "p" });
+    await writeFile(join(dir, "cache", "h.json"), '{"kind": "audio", "prov');
+    expect(await store.get("h")).toBeNull();
+    await writeFile(join(dir, "cache", "h.json"), "{}");
+    expect(await store.get("h")).toBeNull();
+    const again = await store.putFile("h", src, "wav", { kind: "audio", provider: "p" });
+    expect(again.fileName).toBe("h.wav");
+    expect((await store.get("h"))?.meta.provider).toBe("p");
+  });
+});
+
 describe("download helpers", () => {
+  it("passes an AbortSignal to fetch", async () => {
+    let signal: AbortSignal | null | undefined;
+    const fakeFetch = (async (_url: string, init?: RequestInit) => {
+      signal = init?.signal;
+      return new Response("ok");
+    }) as typeof fetch;
+    const dir = await mkdtemp(join(tmpdir(), "dl-"));
+    await downloadTo("https://cdn.example/x.mp4", join(dir, "x.mp4"), fakeFetch);
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("copies file:// URLs", async () => {
     const dir = await mkdtemp(join(tmpdir(), "dl-"));
     const src = join(dir, "in.txt");

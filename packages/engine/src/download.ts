@@ -22,13 +22,15 @@ export function extFromUrl(url: string, fallback: string): string {
   return match ? match[1].toLowerCase() : fallback;
 }
 
+export const FETCH_TIMEOUT_MS = 120_000;
+
 /** Downloads (or copies file://) to destPath. Error messages drop the query string, which may hold signed tokens. */
 export async function downloadTo(url: string, destPath: string, fetchImpl: typeof fetch = fetch): Promise<void> {
   if (url.startsWith("file://")) {
     await copyFile(fileURLToPath(url), destPath);
     return;
   }
-  const res = await fetchImpl(url);
+  const res = await fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) {
     const { origin, pathname } = new URL(url);
     throw new Error(`Download failed with HTTP ${res.status} for ${origin}${pathname}`);

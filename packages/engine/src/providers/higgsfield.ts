@@ -4,6 +4,7 @@ import {
   type V2Response,
 } from "@higgsfield/client/v2";
 import { PermanentProviderError } from "@reel/core";
+import { FETCH_TIMEOUT_MS } from "../download";
 import { Semaphore, withRetry } from "../retry";
 import type { GenResult, ImageGen, MediaUploader, VideoGen } from "./types";
 
@@ -68,7 +69,7 @@ export class HiggsfieldVideoGen implements VideoGen {
   constructor(
     private readonly gateway: HiggsfieldGateway,
     readonly model = "bytedance/seedance-2.5/image-to-video",
-    private readonly resolution: "480p" | "720p" | "1080p" = "720p",
+    readonly resolution: "480p" | "720p" | "1080p" = "720p",
   ) {}
 
   async imageToVideo({ imageUrl, prompt, durationSec }: { imageUrl: string; prompt: string; durationSec: number }): Promise<GenResult> {
@@ -96,6 +97,7 @@ export class HiggsfieldUploader implements MediaUploader {
       method: "POST",
       headers: { Authorization: `Key ${this.credentials}`, "Content-Type": "application/json" },
       body: JSON.stringify({ content_type: contentType }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`Higgsfield upload URL request failed: HTTP ${res.status}`);
     const body = (await res.json()) as { upload_url: string; public_url: string; upload_headers?: Record<string, string> };
@@ -103,6 +105,7 @@ export class HiggsfieldUploader implements MediaUploader {
       method: "PUT",
       headers: body.upload_headers ?? { "Content-Type": contentType },
       body: new Uint8Array(data),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!put.ok) throw new Error(`Higgsfield upload PUT failed: HTTP ${put.status}`);
     return body.public_url;

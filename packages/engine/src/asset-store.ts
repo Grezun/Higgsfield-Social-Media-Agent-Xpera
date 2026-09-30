@@ -1,4 +1,5 @@
-import { access, copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type AssetKind = "image" | "video" | "audio";
@@ -21,7 +22,19 @@ export class FileAssetStore {
 
   async get(hash: string): Promise<StoredAsset | null> {
     try {
-      const { fileName, ...meta } = JSON.parse(await readFile(path.join(this.root, `${hash}.json`), "utf8")) as AssetMeta & { fileName: string };
+      const jsonPath = path.join(this.root, `${hash}.json`);
+      let parsed: (AssetMeta & { fileName?: unknown }) | null;
+      try {
+        parsed = JSON.parse(await readFile(jsonPath, "utf8")) as AssetMeta & { fileName?: unknown };
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
+        parsed = null;
+      }
+      if (!parsed || typeof parsed.fileName !== "string" || !parsed.fileName || parsed.fileName !== path.basename(parsed.fileName)) {
+        await unlink(jsonPath).catch(() => {}); // corrupt metadata is a miss; best-effort cleanup
+        return null;
+      }
+      const { fileName, ...meta } = parsed as AssetMeta & { fileName: string };
       const filePath = path.join(this.root, fileName);
       await access(filePath);
       return { hash, fileName, path: filePath, meta };
@@ -35,11 +48,14 @@ export class FileAssetStore {
     await mkdir(this.root, { recursive: true });
     const fileName = `${hash}.${ext}`;
     const filePath = path.join(this.root, fileName);
-    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    const tmp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
     await copyFile(sourcePath, tmp);
     await rename(tmp, filePath);
     const full: AssetMeta = { ...meta, createdAt: new Date().toISOString() };
-    await writeFile(path.join(this.root, `${hash}.json`), JSON.stringify({ ...full, fileName }, null, 2));
+    const jsonPath = path.join(this.root, `${hash}.json`);
+    const jsonTmp = `${jsonPath}.tmp-${process.pid}-${randomUUID()}`;
+    await writeFile(jsonTmp, JSON.stringify({ ...full, fileName }, null, 2));
+    await rename(jsonTmp, jsonPath);
     return { hash, fileName, path: filePath, meta: full };
   }
 }

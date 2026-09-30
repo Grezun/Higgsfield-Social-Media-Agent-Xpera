@@ -141,6 +141,19 @@ describe("HiggsfieldUploader", () => {
     expect(calls[1]).toMatchObject({ url: "https://upload/put", init: { method: "PUT" } });
   });
 
+  it("passes an AbortSignal on both requests so a stalled upload cannot hang", async () => {
+    const signals: unknown[] = [];
+    const fakeFetch = (async (url: string, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return url.endsWith("generate-upload-url")
+        ? Response.json({ upload_url: "https://upload/put", public_url: "https://cdn/p.png" })
+        : new Response(null, { status: 200 });
+    }) as typeof fetch;
+    await new HiggsfieldUploader("a:b", undefined, fakeFetch).upload(Buffer.from("x"), "image/png");
+    expect(signals).toHaveLength(2);
+    for (const s of signals) expect(s).toBeInstanceOf(AbortSignal);
+  });
+
   it("fails loudly when the PUT fails", async () => {
     const fakeFetch = (async (url: string) =>
       url.endsWith("generate-upload-url")
