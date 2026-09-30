@@ -73,7 +73,12 @@ describe("HiggsfieldGateway retries", () => {
   it("classifies errors", () => {
     expect(isTransientHiggsfieldError(new BadInputError("Maximum number of concurrent requests"))).toBe(true);
     expect(isTransientHiggsfieldError(new BadInputError("prompt: field required"))).toBe(false);
-    expect(isTransientHiggsfieldError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isTransientHiggsfieldError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(false);
+  });
+
+  it("detects concurrent limit from BadInputError details array", () => {
+    const err = new BadInputError([{ type: "value_error", loc: ["body"], msg: "Maximum number of concurrent requests reached" }]);
+    expect(isTransientHiggsfieldError(err)).toBe(true);
   });
 
   it("limits concurrent requests to the account limit", async () => {
@@ -89,6 +94,32 @@ describe("HiggsfieldGateway retries", () => {
     const gen = new HiggsfieldImageGen(new HiggsfieldGateway(subscribe, 2, { sleep: noSleep }));
     await Promise.all(Array.from({ length: 6 }, () => gen.generate({ prompt: "p" })));
     expect(peak).toBe(2);
+  });
+
+  it("converts status 'failed' to PermanentProviderError with request id", async () => {
+    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(async () => done({ status: "failed" }), 1, { sleep: noSleep }));
+    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
+    expect(err).toBeInstanceOf(PermanentProviderError);
+    expect(err.message).toMatch(/ended with status "failed"/);
+    expect(err.requestId).toBe("req-1");
+  });
+
+  it("detects completed without output URL", async () => {
+    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(async () => done({ images: [] }), 1, { sleep: noSleep }));
+    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
+    expect(err).toBeInstanceOf(PermanentProviderError);
+    expect(err.message).toMatch(/completed without an output URL/);
+    expect(err.requestId).toBe("req-1");
+  });
+
+  it("converts status 'canceled' to PermanentProviderError with request id", async () => {
+    const gen = new HiggsfieldImageGen(
+      new HiggsfieldGateway(async () => done({ status: "canceled" as V2Response["status"] }), 1, { sleep: noSleep }),
+    );
+    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
+    expect(err).toBeInstanceOf(PermanentProviderError);
+    expect(err.message).toMatch(/ended with status "canceled"/);
+    expect(err.requestId).toBe("req-1");
   });
 });
 

@@ -1,8 +1,6 @@
 import {
-  APIError,
   BadInputError,
   createHiggsfieldClient,
-  NotEnoughCreditsError,
   type V2Response,
 } from "@higgsfield/client/v2";
 import { PermanentProviderError } from "@reel/core";
@@ -17,14 +15,13 @@ export function sdkSubscribe(credentials: string): SubscribeFn {
   return (endpoint, input) => client.subscribe(endpoint, { input, withPolling: true });
 }
 
-const NETWORK_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "EPIPE"]);
-
 export function isTransientHiggsfieldError(err: unknown): boolean {
-  if (err instanceof NotEnoughCreditsError) return false;
-  // The per-account concurrency limit surfaces as HTTP 400 "Maximum number of concurrent requests…".
-  if (err instanceof BadInputError) return /concurrent/i.test(`${err.message} ${JSON.stringify(err.responseData ?? "")}`);
-  if (err instanceof APIError) return err.statusCode === 429 || (err.statusCode ?? 0) >= 500;
-  return NETWORK_CODES.has((err as { code?: string } | null)?.code ?? "");
+  // subscribe() is not idempotent: it does submit + poll in one call, and retrying during the poll phase
+  // re-submits a running, already-billed job. Only retry the concurrency-limit BadInputError (transient queue state).
+  if (err instanceof BadInputError) {
+    return /concurrent/i.test(`${err.message} ${JSON.stringify((err as { details?: unknown[] }).details ?? [])}`);
+  }
+  return false;
 }
 
 export class HiggsfieldGateway {
