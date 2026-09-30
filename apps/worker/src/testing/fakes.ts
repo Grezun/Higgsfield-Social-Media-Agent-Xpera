@@ -27,6 +27,11 @@ export class FakeJobQueue implements JobQueue {
   readonly progressWrites: { jobId: string; progress: JobProgress }[] = [];
   readonly finished: { jobId: string; outcome: JobOutcome }[] = [];
   requeueCalls: number[] = [];
+  /** Jobs whose ownership was lost: heartbeat/finish return false. */
+  readonly lostJobs = new Set<string>();
+  /** Number of upcoming finish() calls that throw. */
+  finishFailures = 0;
+  finishAttempts = 0;
   constructor(public jobs: JobRow[] = []) {}
 
   async requeueStale(staleSeconds: number) {
@@ -41,13 +46,21 @@ export class FakeJobQueue implements JobQueue {
   }
   async heartbeat(jobId: string) {
     this.heartbeats.push(jobId);
+    return !this.lostJobs.has(jobId);
   }
   async setProgress(jobId: string, progress: JobProgress) {
     this.progressWrites.push({ jobId, progress });
   }
   async finish(jobId: string, outcome: JobOutcome) {
+    this.finishAttempts++;
+    if (this.finishFailures > 0) {
+      this.finishFailures--;
+      throw new Error("finish failed");
+    }
+    if (this.lostJobs.has(jobId)) return false;
     this.finished.push({ jobId, outcome });
     const job = this.jobs.find((j) => j.id === jobId);
     if (job) Object.assign(job, { status: outcome.status, locked_by: null });
+    return true;
   }
 }

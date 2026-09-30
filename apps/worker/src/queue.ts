@@ -8,9 +8,11 @@ export type JobOutcome =
 export interface JobQueue {
   requeueStale(staleSeconds: number): Promise<number>;
   claim(workerId: string): Promise<JobRow | null>;
-  heartbeat(jobId: string): Promise<void>;
+  /** Resolves false when this worker no longer owns the job. */
+  heartbeat(jobId: string): Promise<boolean>;
   setProgress(jobId: string, progress: JobProgress): Promise<void>;
-  finish(jobId: string, outcome: JobOutcome): Promise<void>;
+  /** Resolves false when this worker no longer owns the job (result discarded). */
+  finish(jobId: string, outcome: JobOutcome): Promise<boolean>;
 }
 
 const fail = (what: string, message: string) => new Error(`${what} failed: ${message}`);
@@ -32,13 +34,15 @@ export class SupabaseJobQueue implements JobQueue {
     return data?.[0] ?? null;
   }
 
-  async heartbeat(jobId: string): Promise<void> {
-    const { error } = await this.sb
+  async heartbeat(jobId: string): Promise<boolean> {
+    const { data, error } = await this.sb
       .from("jobs")
       .update({ heartbeat_at: new Date().toISOString() })
       .eq("id", jobId)
-      .eq("locked_by", this.workerId);
+      .eq("locked_by", this.workerId)
+      .select("id");
     if (error) throw fail("heartbeat", error.message);
+    return (data?.length ?? 0) > 0;
   }
 
   async setProgress(jobId: string, progress: JobProgress): Promise<void> {
@@ -50,8 +54,8 @@ export class SupabaseJobQueue implements JobQueue {
     if (error) throw fail("progress update", error.message);
   }
 
-  async finish(jobId: string, outcome: JobOutcome): Promise<void> {
-    const { error } = await this.sb
+  async finish(jobId: string, outcome: JobOutcome): Promise<boolean> {
+    const { data, error } = await this.sb
       .from("jobs")
       .update({
         status: outcome.status,
@@ -61,7 +65,9 @@ export class SupabaseJobQueue implements JobQueue {
         ...(outcome.progress ? { progress: outcome.progress as Json } : {}),
       })
       .eq("id", jobId)
-      .eq("locked_by", this.workerId);
+      .eq("locked_by", this.workerId)
+      .select("id");
     if (error) throw fail("finish", error.message);
+    return (data?.length ?? 0) > 0;
   }
 }
