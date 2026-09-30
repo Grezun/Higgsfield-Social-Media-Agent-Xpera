@@ -3,7 +3,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, loadEnvFile, REPO_ROOT } from "../src/config";
 import { contentTypeFor, downloadTo, extFromUrl } from "../src/download";
-import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen, sdkSubscribe } from "../src/providers/higgsfield";
+import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen } from "../src/providers/higgsfield";
+import { httpHiggsfieldApi } from "../src/providers/higgsfield-api";
+import { MemoryPendingStore } from "../src/pending-store";
 
 // Checks image → upload → image-to-video end to end (spends a few credits).
 loadEnvFile();
@@ -15,7 +17,7 @@ if (!credentials) {
 }
 const outDir = join(REPO_ROOT, "work", "smoke");
 await mkdir(outDir, { recursive: true });
-const gateway = new HiggsfieldGateway(sdkSubscribe(credentials), 1);
+const gateway = new HiggsfieldGateway(httpHiggsfieldApi(credentials, config.higgsfield.baseUrl), new MemoryPendingStore(), 1);
 
 const image = await new HiggsfieldImageGen(gateway, config.higgsfield.imageModel).generate({
   prompt: "A barista pouring latte art, warm morning light, close-up, vertical 9:16 framing",

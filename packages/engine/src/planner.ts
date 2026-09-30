@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
-import { parseStoryboard, StoryboardDraftSchema, type Storyboard, type StoryboardDraft } from "@reel/core";
+import { lengthIssues, maxScenesFor, parseStoryboard, StoryboardDraftSchema, targetWordsFor, type Storyboard, type StoryboardDraft } from "@reel/core";
 import type { PlanRequest, Planner } from "./providers/types";
 
 export type DraftModel = (req: { system: string; user: string }) => Promise<{
@@ -55,13 +55,13 @@ export function systemPrompt(): string {
 }
 
 export function userPrompt(req: PlanRequest): string {
-  const wordsPerSecond = req.language === "he" ? 2.3 : 2.6;
-  const words = Math.round(req.targetDurationSec * wordsPerSecond);
+  const words = targetWordsFor(req.targetDurationSec, req.language);
   const scenes = Math.max(3, Math.round(req.targetDurationSec / (req.pacing === "punchy" ? 3 : 5)));
   return [
     `Brief: ${req.brief}`,
     `Language of the voiceover and overlays: ${req.language === "he" ? "Hebrew" : "English"}.`,
     `Target length: ${req.targetDurationSec} seconds, about ${words} spoken words in total, about ${scenes} scenes.`,
+    `Stay within ${maxScenesFor(req.targetDurationSec)} scenes and about ${targetWordsFor(req.targetDurationSec, req.language)} spoken words in total.`,
     `Pacing: ${req.pacing}.`,
     "Keep each scene's voiceover under 400 characters.",
   ].join("\n");
@@ -87,16 +87,21 @@ export function buildStoryboard(draft: StoryboardDraft, req: PlanRequest): Story
   });
 }
 
-type Attempt = { ok: true; storyboard: Storyboard } | { ok: false; error: string };
+type Attempt =
+  | { ok: true; storyboard: Storyboard }
+  | { ok: false; error: string; storyboard?: Storyboard };
 
 function attempt(result: Awaited<ReturnType<DraftModel>>, req: PlanRequest): Attempt {
   if (result.stopReason === "refusal") throw new PlannerRefusedError();
   if (!result.draft) return { ok: false, error: "The output did not match the storyboard schema." };
+  let storyboard: Storyboard;
   try {
-    return { ok: true, storyboard: buildStoryboard(result.draft, req) };
+    storyboard = buildStoryboard(result.draft, req);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  const issues = lengthIssues(storyboard);
+  return issues.length ? { ok: false, error: issues.join("\n"), storyboard } : { ok: true, storyboard };
 }
 
 export function createPlanner(model: DraftModel): Planner {
@@ -121,6 +126,9 @@ export function createPlanner(model: DraftModel): Planner {
       ].join("\n");
       const second = attempt(await model({ system, user: repairUser }), req);
       if (second.ok) return second.storyboard;
+      // Valid but still over length: return it — the editor shows the length warning.
+      const fallback = second.storyboard ?? firstAttempt.storyboard;
+      if (fallback) return fallback;
       throw new Error(`Claude returned an invalid storyboard twice:\n${second.error}`);
     },
   };

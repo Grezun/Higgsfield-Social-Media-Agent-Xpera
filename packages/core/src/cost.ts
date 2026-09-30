@@ -13,7 +13,7 @@ export const DEFAULT_COST_TABLE: CostTable = {
   "elevenlabs/eleven_v4": { per1kChars: 0.3 },
 };
 
-const WORDS_PER_SECOND: Record<Language, number> = { he: 2.3, en: 2.6 };
+export const WORDS_PER_SECOND: Record<Language, number> = { he: 2.3, en: 2.6 };
 
 export function estimateSceneSeconds(script: string, language: Language): number {
   const words = script.trim().split(/\s+/).filter(Boolean).length;

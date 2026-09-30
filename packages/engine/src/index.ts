@@ -4,6 +4,8 @@ export * from "./download";
 export * from "./pipeline";
 export * from "./planner";
 export * from "./providers";
+export * from "./providers/higgsfield-api";
+export * from "./pending-store";
 export * from "./providers/types";
 export { createFakeProviders } from "./providers/fake";
 export { withRetry, Semaphore } from "./retry";
