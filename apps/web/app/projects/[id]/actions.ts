@@ -1,7 +1,7 @@
 "use server";
 import type { Json } from "@reel/db";
 import { revalidatePath } from "next/cache";
-import { approveStoryboard, newDraftFrom, retryGenerate, saveDraft, type Result, type StoryboardWriteDeps } from "@/lib/approve";
+import { approveStoryboard, newDraftFrom, retryGenerate, saveDraft, type Result, type StoryboardRow, type StoryboardWriteDeps } from "@/lib/approve";
 import { createClient } from "@/lib/supabase/server";
 
 type Client = Awaited<ReturnType<typeof createClient>>;
@@ -11,8 +11,18 @@ function depsFor(sb: Client): StoryboardWriteDeps {
     if (error) throw new Error(`${what}: ${error.message}`);
   };
   return {
-    async updateDraft(id, json, status) {
-      const { data, error } = await sb.from("storyboards").update({ json: json as unknown as Json, status }).eq("id", id).eq("status", "draft").select("id");
+    async getStoryboard(id) {
+      const { data, error } = await sb.from("storyboards").select("project_id, version, status, json").eq("id", id).maybeSingle();
+      must("storyboard lookup", error);
+      return data ? { projectId: data.project_id, version: data.version, status: data.status as StoryboardRow["status"], json: data.json } : null;
+    },
+    async hasDoneGenerate(storyboardId) {
+      const { count, error } = await sb.from("jobs").select("id", { count: "exact", head: true }).eq("type", "generate").eq("status", "done").eq("payload->>storyboardId", storyboardId);
+      must("job lookup", error);
+      return (count ?? 0) > 0;
+    },
+    async updateDraft(projectId, id, json, status) {
+      const { data, error } = await sb.from("storyboards").update({ json: json as unknown as Json, status }).eq("id", id).eq("project_id", projectId).eq("status", "draft").select("id");
       must("storyboard update", error);
       return data?.length ?? 0;
     },
@@ -32,7 +42,7 @@ function depsFor(sb: Client): StoryboardWriteDeps {
     },
     async insertDraft(projectId, version, json) {
       const { error } = await sb.from("storyboards").insert({ project_id: projectId, version, json: json as unknown as Json, status: "draft", created_by: "user" });
-      must("new draft", error);
+      if (error) throw new Error(`${error.code}: ${error.message}`);
     },
     async maxVersion(projectId) {
       const { data, error } = await sb.from("storyboards").select("version").eq("project_id", projectId).order("version", { ascending: false }).limit(1).maybeSingle();
@@ -56,7 +66,7 @@ async function run(projectId: string, fn: (deps: StoryboardWriteDeps) => Promise
 }
 
 export async function saveStoryboardAction(projectId: string, storyboardId: string, json: unknown) {
-  return run(projectId, (deps) => saveDraft(deps, { storyboardId, json }));
+  return run(projectId, (deps) => saveDraft(deps, { projectId, storyboardId, json }));
 }
 export async function approveStoryboardAction(projectId: string, storyboardId: string, json: unknown) {
   return run(projectId, (deps) => approveStoryboard(deps, { projectId, storyboardId, json }));
@@ -64,6 +74,6 @@ export async function approveStoryboardAction(projectId: string, storyboardId: s
 export async function retryGenerateAction(projectId: string, storyboardId: string) {
   return run(projectId, (deps) => retryGenerate(deps, { projectId, storyboardId }));
 }
-export async function editAsNewVersionAction(projectId: string, json: unknown) {
-  return run(projectId, (deps) => newDraftFrom(deps, { projectId, json }));
+export async function editAsNewVersionAction(projectId: string, storyboardId: string) {
+  return run(projectId, (deps) => newDraftFrom(deps, { projectId, sourceStoryboardId: storyboardId }));
 }

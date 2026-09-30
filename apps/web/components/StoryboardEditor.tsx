@@ -107,9 +107,9 @@ export function StoryboardEditor({ projectId, storyboardId, initial, editable, c
       ))}
 
       {editable && !check.ok && (
-        <ul className="warn">{check.errors.map((e) => <li key={e}>{e}</li>)}</ul>
+        <ul className="warn">{check.errors.map((e, i) => <li key={i}>{e}</li>)}</ul>
       )}
-      {errors.length > 0 && <ul role="alert" className="error">{errors.map((e) => <li key={e}>{e}</li>)}</ul>}
+      {errors.length > 0 && <ul role="alert" className="error">{errors.map((e, i) => <li key={i}>{e}</li>)}</ul>}
 
       <div className="row">
         {editable ? (
@@ -122,7 +122,7 @@ export function StoryboardEditor({ projectId, storyboardId, initial, editable, c
           </>
         ) : (
           <>
-            <button type="button" disabled={pending} onClick={() => act(() => editAsNewVersionAction(projectId, sb))}>Edit as new version</button>
+            <button type="button" disabled={pending} onClick={() => act(() => editAsNewVersionAction(projectId, storyboardId))}>Edit as new version</button>
             {canRetry && (
               <button type="button" className="primary" disabled={pending} onClick={() => act(() => retryGenerateAction(projectId, storyboardId))}>
                 Retry generation

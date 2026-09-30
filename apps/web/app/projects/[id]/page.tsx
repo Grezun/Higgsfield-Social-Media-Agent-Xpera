@@ -13,7 +13,10 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   if (!view) notFound();
   const { project, storyboard, job } = view;
   const parsed = storyboard ? checkStoryboard(storyboard.json) : null;
-  const canRetry = job?.type === "generate" && (job.status === "needs_attention" || job.status === "failed");
+  const canRetry =
+    storyboard?.status === "approved" &&
+    !(job && (job.status === "queued" || job.status === "running")) &&
+    !(job?.type === "generate" && job.status === "done");
 
   return (
     <main className="stack">

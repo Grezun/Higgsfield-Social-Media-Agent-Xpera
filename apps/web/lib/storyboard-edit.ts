@@ -12,8 +12,7 @@ export type EditAction =
   | { type: "moveScene"; index: number; direction: -1 | 1 }
   | { type: "addOverlay"; sceneIndex: number }
   | { type: "updateOverlay"; sceneIndex: number; overlayIndex: number; patch: OverlayPatch }
-  | { type: "removeOverlay"; sceneIndex: number; overlayIndex: number }
-  | { type: "reset"; storyboard: Storyboard };
+  | { type: "removeOverlay"; sceneIndex: number; overlayIndex: number };
 
 export function newSceneId(existing: string[]): string {
   for (let n = existing.length + 1; ; n++) {
@@ -66,8 +65,6 @@ export function editStoryboard(sb: Storyboard, action: EditAction): Storyboard {
       }));
     case "removeOverlay":
       return withScene(sb, action.sceneIndex, (s) => ({ ...s, overlays: s.overlays.filter((_, i) => i !== action.overlayIndex) }));
-    case "reset":
-      return action.storyboard;
   }
 }
 
