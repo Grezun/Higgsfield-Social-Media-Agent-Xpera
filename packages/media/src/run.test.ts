@@ -20,7 +20,7 @@ describe("runFfmpeg", () => {
   });
 
   it("kills the process on timeout", async () => {
-    const err = await runFfmpeg(["-f", "lavfi", "-i", "testsrc2=duration=120", "-f", "null", "-"], { timeoutMs: 300 }).catch((e) => e);
+    const err = await runFfmpeg(["-re", "-f", "lavfi", "-i", "testsrc2=duration=120", "-f", "null", "-"], { timeoutMs: 300 }).catch((e) => e);
     expect(err).toBeInstanceOf(FfmpegError);
     expect(err.message).toMatch(/timed out after 300 ms/);
   });
