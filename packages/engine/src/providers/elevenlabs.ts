@@ -40,8 +40,12 @@ const NETWORK_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_A
 
 export function isTransientElevenLabsError(err: unknown): boolean {
   if (err instanceof ElevenLabsError) {
-    const status = err.statusCode ?? 0;
-    return status === 429 || status >= 500;
+    // If statusCode is undefined, the error wraps a network/fetch failure; check the cause
+    if (err.statusCode === undefined) {
+      return NETWORK_CODES.has((err.cause as { code?: string } | undefined)?.code ?? "");
+    }
+    // Otherwise, retry only on rate limit (429) or server errors (5xx)
+    return err.statusCode === 429 || err.statusCode >= 500;
   }
   return NETWORK_CODES.has((err as { code?: string } | null)?.code ?? "");
 }
@@ -67,6 +71,7 @@ export class ElevenLabsVoice implements VoiceGen {
       return { audio, ext: "mp3", words: alignmentToWords(res.alignment), timingSource: "alignment" };
     }
     const words = await withRetry(() => this.api.stt(audio, req.language), retry);
+    if (words.length === 0) throw new PermanentProviderError("ElevenLabs returned no word timings (alignment and transcription both empty)", "elevenlabs");
     return { audio, ext: "mp3", words, timingSource: "transcription" };
   }
 }

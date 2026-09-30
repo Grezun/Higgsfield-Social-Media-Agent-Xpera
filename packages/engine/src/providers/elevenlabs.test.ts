@@ -1,6 +1,6 @@
 import { ElevenLabsError } from "@elevenlabs/elevenlabs-js";
 import { describe, expect, it, vi } from "vitest";
-import { ElevenLabsVoice, type ElevenLabsApi } from "./elevenlabs";
+import { ElevenLabsVoice, isTransientElevenLabsError, type ElevenLabsApi } from "./elevenlabs";
 
 const REQ = { text: "שלום עולם", voiceId: "v1", modelId: "eleven_v4", language: "he" as const };
 const alignmentFor = (text: string) => {
@@ -71,5 +71,44 @@ describe("ElevenLabsVoice", () => {
   it("rejects empty audio", async () => {
     const api: ElevenLabsApi = { tts: async () => ({ audioBase64: "", alignment: null }), stt: vi.fn() };
     await expect(new ElevenLabsVoice(api, noSleep).synthesize(REQ)).rejects.toThrow(/empty audio/);
+  });
+
+  it("falls back to Scribe when alignment has empty characters array", async () => {
+    const words = [{ text: "שלום", startMs: 0, endMs: 400 }];
+    const api: ElevenLabsApi = {
+      tts: async () => ({ audioBase64, alignment: { characters: [], characterStartTimesSeconds: [], characterEndTimesSeconds: [] } }),
+      stt: vi.fn(async () => words),
+    };
+    const result = await new ElevenLabsVoice(api, noSleep).synthesize(REQ);
+    expect(result.timingSource).toBe("transcription");
+    expect(api.stt).toHaveBeenCalled();
+  });
+
+  it("retries network errors wrapped in ElevenLabsError with cause", async () => {
+    let calls = 0;
+    const flaky: ElevenLabsApi = {
+      tts: async () => {
+        calls++;
+        if (calls === 1) {
+          const err = new ElevenLabsError({ message: "fetch failed" });
+          (err as any).cause = Object.assign(new Error("reset"), { code: "ECONNRESET" });
+          throw err;
+        }
+        return { audioBase64, alignment: alignmentFor("a") };
+      },
+      stt: vi.fn(),
+    };
+    await new ElevenLabsVoice(flaky, noSleep).synthesize({ ...REQ, text: "a" });
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry ElevenLabsError with no status and no cause", () => {
+    const err = new ElevenLabsError({ message: "unknown error" });
+    expect(isTransientElevenLabsError(err)).toBe(false);
+  });
+
+  it("rejects when Scribe returns no words", async () => {
+    const api: ElevenLabsApi = { tts: async () => ({ audioBase64, alignment: null }), stt: vi.fn(async () => []) };
+    await expect(new ElevenLabsVoice(api, noSleep).synthesize(REQ)).rejects.toThrow(/no word timings/);
   });
 });
