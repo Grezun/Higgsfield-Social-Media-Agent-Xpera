@@ -29,13 +29,56 @@ describe("MirroredAssetStore", () => {
     });
   });
 
-  it("a local hit never touches the index", async () => {
+  it("a local hit checks the index once per process", async () => {
     const { dir, src, blobs, index } = await setup();
     const store = new MirroredAssetStore(new FileAssetStore(join(dir, "a")), blobs, index);
     await store.putFile(HASH, src, "wav", meta);
     index.finds = 0;
     expect(await store.get(HASH)).not.toBeNull();
+    expect(await store.get(HASH)).not.toBeNull();
     expect(index.finds).toBe(0);
+  });
+
+  it("heals an asset whose upload failed", async () => {
+    const { dir, src, blobs, index } = await setup();
+    let failed = false;
+    const flaky = {
+      upload: async (...a: Parameters<InMemoryBlobStore["upload"]>) => {
+        if (!failed) {
+          failed = true;
+          throw new Error("storage down");
+        }
+        return blobs.upload(...a);
+      },
+      download: (...a: Parameters<InMemoryBlobStore["download"]>) => blobs.download(...a),
+    };
+    const store = new MirroredAssetStore(new FileAssetStore(join(dir, "a")), flaky, index);
+    await expect(store.putFile(HASH, src, "wav", meta)).rejects.toThrow(/storage down/);
+    expect(await store.get(HASH)).not.toBeNull();
+    expect(blobs.objects.get(`assets/${HASH}.wav`)?.toString()).toBe("wav-bytes");
+    expect(index.records.has(HASH)).toBe(true);
+    const finds = index.finds;
+    await store.get(HASH);
+    expect(index.finds).toBe(finds);
+  });
+
+  it("backfills an asset cached locally before mirroring", async () => {
+    const { dir, src, blobs, index } = await setup();
+    await new FileAssetStore(join(dir, "a")).putFile(HASH, src, "wav", meta);
+    const store = new MirroredAssetStore(new FileAssetStore(join(dir, "a")), blobs, index);
+    expect(await store.get(HASH)).not.toBeNull();
+    expect(blobs.objects.has(`assets/${HASH}.wav`)).toBe(true);
+    expect(index.records.has(HASH)).toBe(true);
+  });
+
+  it("a mirror failure on read still returns the local asset", async () => {
+    const { dir, src, index } = await setup();
+    await new FileAssetStore(join(dir, "a")).putFile(HASH, src, "wav", meta);
+    const broken = { upload: async () => { throw new Error("nope"); }, download: async () => { throw new Error("nope"); } };
+    const logs: string[] = [];
+    const store = new MirroredAssetStore(new FileAssetStore(join(dir, "a")), broken, index, (m) => logs.push(m));
+    expect(await store.get(HASH)).not.toBeNull();
+    expect(logs.join("\n")).toMatch(/mirror failed/);
   });
 
   it("restores an asset made on another machine from Storage, metadata included", async () => {

@@ -94,16 +94,46 @@ export class MirroredAssetStore implements AssetStore {
     return this.local.root;
   }
 
+  private readonly mirrored = new Set<string>();
+
+  private async mirror(stored: StoredAsset): Promise<void> {
+    // Upload before indexing so the index never points at a missing object.
+    await this.blobs.upload(BUCKETS.assets, stored.fileName, stored.path, contentTypeFor(stored.fileName));
+    await this.index.insert({
+      inputHash: stored.hash,
+      kind: stored.meta.kind,
+      fileName: stored.fileName,
+      storagePath: stored.fileName,
+      provider: stored.meta.provider,
+      model: stored.meta.model,
+      requestId: stored.meta.requestId,
+      meta: { estUsd: stored.meta.estUsd, createdAt: stored.meta.createdAt, extra: stored.meta.extra },
+    });
+  }
+
   async get(hash: string): Promise<StoredAsset | null> {
     const hit = await this.local.get(hash);
-    if (hit) return hit;
+    if (hit) {
+      if (!this.mirrored.has(hash)) {
+        try {
+          if (!(await this.index.find(hash))) {
+            this.log(`mirroring cached asset ${hash} that was never uploaded`);
+            await this.mirror(hit);
+          }
+          this.mirrored.add(hash);
+        } catch (err) {
+          this.log(`mirror failed for ${hash}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      return hit;
+    }
     const record = await this.index.find(hash);
     if (!record) return null;
     await mkdir(this.local.root, { recursive: true });
     const tmp = join(this.local.root, `${record.fileName}.download-${randomUUID()}`);
     try {
       await this.blobs.download(BUCKETS.assets, record.storagePath, tmp);
-      return await this.local.putFile(hash, tmp, extname(record.fileName).slice(1), {
+      const restored = await this.local.putFile(hash, tmp, extname(record.fileName).slice(1), {
         kind: record.kind,
         provider: record.provider,
         model: record.model,
@@ -111,6 +141,8 @@ export class MirroredAssetStore implements AssetStore {
         estUsd: record.meta.estUsd,
         extra: record.meta.extra,
       });
+      this.mirrored.add(hash);
+      return restored;
     } catch (err) {
       this.log(`cache restore failed for ${hash}: ${err instanceof Error ? err.message : err}; it will be regenerated`);
       return null;
@@ -121,18 +153,8 @@ export class MirroredAssetStore implements AssetStore {
 
   async putFile(hash: string, sourcePath: string, ext: string, meta: Omit<AssetMeta, "createdAt">): Promise<StoredAsset> {
     const stored = await this.local.putFile(hash, sourcePath, ext, meta);
-    // Upload before indexing so the index never points at a missing object.
-    await this.blobs.upload(BUCKETS.assets, stored.fileName, stored.path, contentTypeFor(stored.fileName));
-    await this.index.insert({
-      inputHash: hash,
-      kind: meta.kind,
-      fileName: stored.fileName,
-      storagePath: stored.fileName,
-      provider: meta.provider,
-      model: meta.model,
-      requestId: meta.requestId,
-      meta: { estUsd: meta.estUsd, createdAt: stored.meta.createdAt, extra: meta.extra },
-    });
+    await this.mirror(stored);
+    this.mirrored.add(hash);
     return stored;
   }
 }
