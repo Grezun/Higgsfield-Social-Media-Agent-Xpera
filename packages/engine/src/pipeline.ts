@@ -2,7 +2,6 @@ import {
   assemble,
   DEFAULT_COST_TABLE,
   DEFAULT_TAIL_MS,
-  inputHash,
   SceneFailuresError,
   sceneSpans,
   UnsupportedFormatError,
@@ -14,6 +13,7 @@ import {
   type Timeline,
   type Word,
 } from "@reel/core";
+import { inputHash } from "@reel/core/hash";
 import { conformVideo, exportDeliverable, fitDuration, normalizeLoudness, probe, thumbnail, trimTrailingSilence } from "@reel/media";
 import { renderReel } from "@reel/video/render";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
