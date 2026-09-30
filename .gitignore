@@ -5,3 +5,5 @@ node_modules/
 .DS_Store
 .reel-cache/
 work/
+apps/web/.next/
+apps/web/next-env.d.ts

@@ -1,0 +1,23 @@
+{
+  "name": "@reel/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@reel/core": "*",
+    "@reel/db": "*",
+    "@reel/video": "*",
+    "@remotion/player": "4.0.531",
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.117.2",
+    "next": "16.3.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "remotion": "4.0.531"
+  }
+}
