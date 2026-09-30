@@ -1,6 +1,7 @@
-import type { JobProgress, JobRow } from "@reel/db";
+import type { JobProgress, JobRow, ProjectStatus } from "@reel/db";
 import { readFile, writeFile } from "node:fs/promises";
 import type { JobOutcome, JobQueue } from "../queue";
+import type { ReelDb, StoryboardRecord } from "../reel-db";
 import type { AssetIndex, AssetRecord, BlobStore } from "../storage";
 
 export function makeJob(partial: Partial<JobRow> = {}): JobRow {
@@ -88,5 +89,29 @@ export class InMemoryAssetIndex implements AssetIndex {
   }
   async insert(record: AssetRecord) {
     if (!this.records.has(record.inputHash)) this.records.set(record.inputHash, record);
+  }
+}
+
+export class InMemoryReelDb implements ReelDb {
+  readonly storyboards: StoryboardRecord[] = [];
+  readonly renders: Parameters<ReelDb["insertRender"]>[0][] = [];
+  readonly projectStatus = new Map<string, { status: ProjectStatus; title?: string }>();
+
+  async nextStoryboardVersion(projectId: string) {
+    return Math.max(0, ...this.storyboards.filter((s) => s.projectId === projectId).map((s) => s.version)) + 1;
+  }
+  async insertStoryboard(input: Parameters<ReelDb["insertStoryboard"]>[0]) {
+    const id = crypto.randomUUID();
+    this.storyboards.push({ id, projectId: input.projectId, version: input.version, json: input.json, status: "draft" });
+    return id;
+  }
+  async getStoryboard(id: string) {
+    return this.storyboards.find((s) => s.id === id) ?? null;
+  }
+  async setProjectStatus(projectId: string, status: ProjectStatus, title?: string) {
+    this.projectStatus.set(projectId, { status, ...(title ? { title } : {}) });
+  }
+  async insertRender(input: Parameters<ReelDb["insertRender"]>[0]) {
+    this.renders.push(input);
   }
 }
