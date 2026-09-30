@@ -23,7 +23,7 @@ export function createFakeProviders(opts: { workDir: string; failPromptsContaini
   const providers: Providers & { planner: Planner; calls: typeof calls } = {
     calls,
     image: {
-      model: "higgsfield-ai/soul/v2/standard",
+      model: "fake/image",
       async generate({ prompt }) {
         calls.image++;
         if (opts.failPromptsContaining && prompt.includes(opts.failPromptsContaining)) {
@@ -35,7 +35,8 @@ export function createFakeProviders(opts: { workDir: string; failPromptsContaini
       },
     },
     video: {
-      model: "bytedance/seedance-2.5/image-to-video",
+      model: "fake/video",
+      resolution: "fake",
       async imageToVideo({ durationSec }) {
         calls.video++;
         const out = nextFile("mp4");

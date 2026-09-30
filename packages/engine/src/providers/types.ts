@@ -9,6 +9,7 @@ export interface ImageGen {
 
 export interface VideoGen {
   readonly model: string;
+  readonly resolution: string;
   imageToVideo(req: { imageUrl: string; prompt: string; durationSec: number }): Promise<GenResult>;
 }
 

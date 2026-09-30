@@ -36,8 +36,8 @@ export type RenderOutputs = { timeline: Timeline; master: string; reel: string; 
 export const hashes = {
   voice: (req: VoiceRequest) => inputHash({ step: "voice", v: 1, ...req }),
   image: (model: string, prompt: string) => inputHash({ step: "image", v: 1, model, prompt }),
-  video: (model: string, prompt: string, imageHash: string, durationSec: number) =>
-    inputHash({ step: "i2v", v: 1, model, prompt, imageHash, durationSec }),
+  video: (model: string, resolution: string, prompt: string, imageHash: string, durationSec: number) =>
+    inputHash({ step: "i2v", v: 2, model, resolution, prompt, imageHash, durationSec }),
   fit: (sourceHash: string, targetMs: number) => inputHash({ step: "fit", v: 1, sourceHash, targetMs }),
 };
 
@@ -95,7 +95,11 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
       },
     };
   });
-  const words = z.array(WordSchema).parse(voice.meta.extra?.words ?? []);
+  const rawWords = voice.meta.extra?.words;
+  if (!Array.isArray(rawWords) || rawWords.length === 0) {
+    throw new Error(`cached voice asset ${voice.hash} has no word timings; delete it from the cache`);
+  }
+  const words = z.array(WordSchema).parse(rawWords);
   const durationMs = Math.round((await probe(voice.path)).durationSec * 1000);
   const spans = sceneSpans(sb.scenes.map((s) => s.script), words, durationMs);
 
@@ -123,7 +127,16 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
           return;
         }
         const billSec = videoBillSeconds(sceneSec);
-        const rawVideo = await cached(store, hashes.video(p.video.model, prompt, image.hash, billSec), async () => {
+        // Reuse any cached raw clip at least billSec long (fitDuration trims it), so a script edit never re-bills b-roll.
+        let rawHash = hashes.video(p.video.model, p.video.resolution, prompt, image.hash, billSec);
+        for (let d = billSec; d <= 30; d++) {
+          const candidate = hashes.video(p.video.model, p.video.resolution, prompt, image.hash, d);
+          if (await store.get(candidate)) {
+            rawHash = candidate;
+            break;
+          }
+        }
+        const rawVideo = await cached(store, rawHash, async () => {
           log(`${scene.id}: animating image (${billSec}s)`);
           const imageUrl = await p.uploader.upload(await readFile(image.path), contentTypeFor(image.fileName));
           const res = await p.video.imageToVideo({ imageUrl, prompt, durationSec: billSec });
