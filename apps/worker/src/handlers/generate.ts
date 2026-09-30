@@ -29,6 +29,10 @@ export function createGenerateHandler(deps: GenerateHandlerDeps): JobHandler {
     if (record.status !== "approved") throw new Error("storyboard is not approved; approve it before generating");
 
     let progress = emptyProgress();
+    if (await deps.db.hasRender(storyboardId)) {
+      await deps.db.setProjectStatus(job.project_id, "rendered");
+      return { status: "done", progress };
+    }
     const tmpDir = await mkdtemp(join(tmpdir(), "reel-job-"));
     try {
       const sb = parseStoryboard(record.json);

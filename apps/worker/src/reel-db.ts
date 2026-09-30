@@ -9,6 +9,7 @@ export interface ReelDb {
   insertStoryboard(input: { projectId: string; version: number; json: Storyboard; createdBy: "agent" | "user" }): Promise<string>;
   getStoryboard(id: string): Promise<StoryboardRecord | null>;
   setProjectStatus(projectId: string, status: ProjectStatus, title?: string): Promise<void>;
+  hasRender(storyboardId: string): Promise<boolean>;
   insertRender(input: {
     projectId: string;
     storyboardId: string;
@@ -49,6 +50,12 @@ export class SupabaseReelDb implements ReelDb {
   async setProjectStatus(projectId: string, status: ProjectStatus, title?: string) {
     const { error } = await this.sb.from("projects").update({ status, ...(title ? { title: title.slice(0, 120) } : {}) }).eq("id", projectId);
     check("project status update", error);
+  }
+
+  async hasRender(storyboardId: string) {
+    const { count, error } = await this.sb.from("renders").select("id", { count: "exact", head: true }).eq("storyboard_id", storyboardId);
+    check("render lookup", error);
+    return (count ?? 0) > 0;
   }
 
   async insertRender(input: Parameters<ReelDb["insertRender"]>[0]) {

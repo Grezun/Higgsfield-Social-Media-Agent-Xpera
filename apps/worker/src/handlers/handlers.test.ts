@@ -3,7 +3,7 @@ import { costModels, createFakeProviders, FileAssetStore, loadConfig } from "@re
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FAKE_VOICE_ID } from "../fake-voice";
 import { InMemoryBlobStore, InMemoryReelDb, makeJob } from "../testing/fakes";
 import { createGenerateHandler } from "./generate";
@@ -80,6 +80,24 @@ describe("generate handler", () => {
     expect(s.db.projectStatus.get("p1")?.status).toBe("rendered");
     expect(reports.length).toBeGreaterThan(0);
     expect(outcome.progress?.steps.export).toBe("done");
+  }, 600_000);
+
+  it("is idempotent: a second generate for an already-rendered storyboard makes no provider calls and keeps one render", async () => {
+    const s = await setup();
+    const record = await planAndApprove(s);
+    const job = () => makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } });
+    expect((await s.generate()(job(), ctx().ctx)).status).toBe("done");
+    s.db.projectStatus.set("p1", { status: "generating" });
+    const voice = vi.spyOn(s.providers.voice, "synthesize");
+    const image = vi.spyOn(s.providers.image, "generate");
+    const video = vi.spyOn(s.providers.video, "imageToVideo");
+    const second = await s.generate()(job(), ctx().ctx);
+    expect(second.status).toBe("done");
+    expect(voice).not.toHaveBeenCalled();
+    expect(image).not.toHaveBeenCalled();
+    expect(video).not.toHaveBeenCalled();
+    expect(s.db.renders).toHaveLength(1);
+    expect(s.db.projectStatus.get("p1")?.status).toBe("rendered");
   }, 600_000);
 
   it("refuses a storyboard that isn't approved, before any spend", async () => {

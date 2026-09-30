@@ -111,6 +111,9 @@ export class InMemoryReelDb implements ReelDb {
   async setProjectStatus(projectId: string, status: ProjectStatus, title?: string) {
     this.projectStatus.set(projectId, { status, ...(title ? { title } : {}) });
   }
+  async hasRender(storyboardId: string) {
+    return this.renders.some((r) => r.storyboardId === storyboardId);
+  }
   async insertRender(input: Parameters<ReelDb["insertRender"]>[0]) {
     this.renders.push(input);
   }
