@@ -17,6 +17,8 @@ export type GenerateHandlerDeps = {
   costModels: { image: string; video: string; voice: string };
   /** Fake mode: only accept storyboards using this voice id (see PlanHandlerDeps.forceVoiceId). */
   requireVoiceId?: string;
+  /** Real mode: refuse storyboards using this voice id (fake-mode audio). */
+  forbidVoiceId?: string;
 };
 
 export function createGenerateHandler(deps: GenerateHandlerDeps): JobHandler {
@@ -32,6 +34,12 @@ export function createGenerateHandler(deps: GenerateHandlerDeps): JobHandler {
       const sb = parseStoryboard(record.json);
       if (deps.requireVoiceId && sb.voice?.voiceId !== deps.requireVoiceId) {
         throw new Error("this worker runs fake providers; the storyboard uses a real voice. Run the real worker, or plan a new reel with the fake worker");
+      }
+      if (deps.forbidVoiceId && sb.voice?.voiceId === deps.forbidVoiceId) {
+        throw new Error("this storyboard was planned by a fake-mode worker (fake voice); re-plan it with the real worker before generating");
+      }
+      if (sb.version !== record.version) {
+        throw new Error(`storyboard JSON version ${sb.version} does not match stored version ${record.version}`);
       }
       assertWithinCap(estimateCost(sb, deps.costModels), deps.spendCapUsd);
       await deps.db.setProjectStatus(job.project_id, "generating");
@@ -52,14 +60,14 @@ export function createGenerateHandler(deps: GenerateHandlerDeps): JobHandler {
       }
 
       const out = await renderAndExport(sb, gen, pipelineDeps, join(tmpDir, "out"));
-      const paths = renderPaths(job.project_id, sb.version);
+      const paths = renderPaths(job.project_id, record.version);
       await deps.blobs.upload(BUCKETS.renders, paths.reel, out.reel, "video/mp4");
       await deps.blobs.upload(BUCKETS.renders, paths.preview, out.preview, "video/mp4");
       await deps.blobs.upload(BUCKETS.renders, paths.thumbnail, out.thumbnail, "image/jpeg");
       await deps.db.insertRender({
         projectId: job.project_id,
         storyboardId,
-        storyboardVersion: sb.version,
+        storyboardVersion: record.version,
         paths,
         timeline: buildTimeline(sb, gen, assetSrc),
       });

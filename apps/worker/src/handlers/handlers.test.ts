@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FAKE_VOICE_ID } from "../fake-voice";
 import { InMemoryBlobStore, InMemoryReelDb, makeJob } from "../testing/fakes";
 import { createGenerateHandler } from "./generate";
 import { createPlanHandler } from "./plan";
@@ -20,9 +21,9 @@ async function setup(failPromptsContaining?: string) {
   const db = new InMemoryReelDb();
   const blobs = new InMemoryBlobStore();
   const config = loadConfig({ REEL_CACHE_DIR: join(dir, "cache") }, { providers: "fake" });
-  const plan = createPlanHandler({ planner: providers.planner, db, voices: {}, voiceModelId: "eleven_v4", forceVoiceId: "fake-voice" });
+  const plan = createPlanHandler({ planner: providers.planner, db, voices: {}, voiceModelId: "eleven_v4", forceVoiceId: FAKE_VOICE_ID });
   const generate = (over: Partial<Parameters<typeof createGenerateHandler>[0]> = {}) =>
-    createGenerateHandler({ providers, store: new FileAssetStore(config.cacheDir), blobs, db, spendCapUsd: 10, costModels: costModels(config), requireVoiceId: "fake-voice", ...over });
+    createGenerateHandler({ providers, store: new FileAssetStore(config.cacheDir), blobs, db, spendCapUsd: 10, costModels: costModels(config), requireVoiceId: FAKE_VOICE_ID, ...over });
   return { dir, providers, db, blobs, plan, generate };
 }
 
@@ -40,7 +41,7 @@ describe("plan handler", () => {
     expect(outcome).toEqual({ status: "done" });
     expect(s.db.storyboards).toHaveLength(1);
     expect(s.db.storyboards[0]).toMatchObject({ projectId: "p1", version: 1, status: "draft" });
-    expect((s.db.storyboards[0].json as { voice: { voiceId: string }; version: number }).voice.voiceId).toBe("fake-voice");
+    expect((s.db.storyboards[0].json as { voice: { voiceId: string }; version: number }).voice.voiceId).toBe(FAKE_VOICE_ID);
     expect(s.db.projectStatus.get("p1")?.status).toBe("draft");
   });
 
@@ -93,13 +94,14 @@ describe("generate handler", () => {
     const s = await setup();
     const record = await planAndApprove(s);
     await expect(s.generate()(makeJob({ type: "generate", project_id: "other", payload: { storyboardId: record.id } }), ctx().ctx)).rejects.toThrow(/not found for this project/);
+    expect(s.providers.calls.voice + s.providers.calls.image + s.providers.calls.video).toBe(0);
   });
 
   it("stops at the spend cap before any provider call and marks the project failed", async () => {
     const s = await setup();
     const record = await planAndApprove(s);
     await expect(s.generate({ spendCapUsd: 0.0001 })(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx().ctx)).rejects.toBeInstanceOf(SpendCapError);
-    expect(s.providers.calls.voice).toBe(0);
+    expect(s.providers.calls.voice + s.providers.calls.image + s.providers.calls.video).toBe(0);
     expect(s.db.projectStatus.get("p1")?.status).toBe("failed");
   });
 
@@ -121,5 +123,21 @@ describe("generate handler", () => {
     const record = await planAndApprove(s);
     (record.json as { voice: { voiceId: string } }).voice.voiceId = "real-voice-id";
     await expect(s.generate()(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx().ctx)).rejects.toThrow(/fake providers/);
+    expect(s.providers.calls.voice + s.providers.calls.image + s.providers.calls.video).toBe(0);
+  });
+
+  it("real mode refuses a fake-voice storyboard before any spend", async () => {
+    const s = await setup();
+    const record = await planAndApprove(s);
+    await expect(s.generate({ requireVoiceId: undefined, forbidVoiceId: FAKE_VOICE_ID })(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx().ctx)).rejects.toThrow(/fake-mode worker/);
+    expect(s.providers.calls.voice + s.providers.calls.image + s.providers.calls.video).toBe(0);
+  });
+
+  it("refuses a record whose JSON version differs from the stored version", async () => {
+    const s = await setup();
+    const record = await planAndApprove(s);
+    (record.json as { version: number }).version = 7;
+    await expect(s.generate()(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx().ctx)).rejects.toThrow(/does not match stored version/);
+    expect(s.providers.calls.voice + s.providers.calls.image + s.providers.calls.video).toBe(0);
   });
 });
