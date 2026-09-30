@@ -1,5 +1,6 @@
 "use server";
 import { redirect } from "next/navigation";
+import { createReelFromForm } from "@/lib/create-reel";
 import { parsePlanForm } from "@/lib/plan-form";
 import { createClient } from "@/lib/supabase/server";
 
@@ -13,17 +14,27 @@ export async function createReel(_prev: NewReelState, formData: FormData): Promi
   if (!claims?.claims) return { errors: ["Your session expired. Sign in again."] };
 
   const { form } = parsed;
-  const { data: project, error } = await supabase
-    .from("projects")
-    .insert({ title: form.brief.slice(0, 80), language: form.language, format: "faceless", status: "planning" })
-    .select("id")
-    .single();
-  if (error || !project) return { errors: [`Couldn't create the reel: ${error?.message ?? "unknown error"}`] };
-
-  const { error: jobError } = await supabase.from("jobs").insert({ project_id: project.id, type: "plan", payload: form });
-  if (jobError) {
-    if (jobError.code === "23505") return { errors: ["A job for this reel is already queued or running."] };
-    return { errors: [`Couldn't start planning: ${jobError.message}`] };
-  }
-  redirect(`/projects/${project.id}`);
+  const result = await createReelFromForm(
+    {
+      async insertProject(input) {
+        const { data, error } = await supabase
+          .from("projects")
+          .insert({ title: input.title, language: input.language, format: "faceless", status: "planning" })
+          .select("id")
+          .single();
+        if (error || !data) return { error: error?.message ?? "unknown error" };
+        return { id: data.id };
+      },
+      async insertPlanJob(projectId, payload) {
+        const { error } = await supabase.from("jobs").insert({ project_id: projectId, type: "plan", payload });
+        return error ? { error: error.message, code: error.code } : { ok: true };
+      },
+      async markProjectFailed(projectId) {
+        await supabase.from("projects").update({ status: "failed" }).eq("id", projectId);
+      },
+    },
+    form,
+  );
+  if (!result.ok) return { errors: result.errors };
+  redirect(`/projects/${result.projectId}`);
 }
