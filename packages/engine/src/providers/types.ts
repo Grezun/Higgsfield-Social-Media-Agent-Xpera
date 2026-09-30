@@ -4,13 +4,13 @@ export type GenResult = { url: string; requestId: string };
 
 export interface ImageGen {
   readonly model: string;
-  generate(req: { prompt: string }): Promise<GenResult>;
+  generate(req: { prompt: string; resumeKey?: string }): Promise<GenResult>;
 }
 
 export interface VideoGen {
   readonly model: string;
   readonly resolution: string;
-  imageToVideo(req: { imageUrl: string; prompt: string; durationSec: number }): Promise<GenResult>;
+  imageToVideo(req: { imageUrl: string; prompt: string; durationSec: number; resumeKey?: string }): Promise<GenResult>;
 }
 
 export interface MediaUploader {

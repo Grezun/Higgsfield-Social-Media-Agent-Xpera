@@ -126,9 +126,10 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
       try {
         if (!prompt) throw new Error("missing visual prompt");
         const sceneSec = (spans[i].endMs - spans[i].startMs + (i === last ? DEFAULT_TAIL_MS : 0)) / 1000;
-        const image = await cached(store, hashes.image(p.image.model, prompt), async () => {
+        const imageHash = hashes.image(p.image.model, prompt);
+        const image = await cached(store, imageHash, async () => {
           log(`${scene.id}: generating image`);
-          const res = await p.image.generate({ prompt });
+          const res = await p.image.generate({ prompt, resumeKey: imageHash });
           const ext = extFromUrl(res.url, "png");
           const file = tmp(`${scene.id}-image.${ext}`);
           await downloadTo(res.url, file);
@@ -152,7 +153,7 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
         const rawVideo = await cached(store, rawHash, async () => {
           log(`${scene.id}: animating image (${billSec}s)`);
           const imageUrl = await p.uploader.upload(await readFile(image.path), contentTypeFor(image.fileName));
-          const res = await p.video.imageToVideo({ imageUrl, prompt, durationSec: billSec });
+          const res = await p.video.imageToVideo({ imageUrl, prompt, durationSec: billSec, resumeKey: rawHash });
           const file = tmp(`${scene.id}-raw.mp4`);
           await downloadTo(res.url, file);
           return { path: file, ext: "mp4", meta: { kind: "video", provider: "higgsfield", model: p.video.model, requestId: res.requestId, estUsd: estUsd(p.video.model, "perSecond", billSec) } };

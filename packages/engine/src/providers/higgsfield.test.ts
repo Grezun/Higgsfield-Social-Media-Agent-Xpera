@@ -1,125 +1,208 @@
-import { BadInputError, NotEnoughCreditsError, type V2Response } from "@higgsfield/client/v2";
 import { PermanentProviderError } from "@reel/core";
 import { describe, expect, it, vi } from "vitest";
-import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen, isTransientHiggsfieldError } from "./higgsfield";
+import { MemoryPendingStore } from "../pending-store";
+import { HfHttpError, httpHiggsfieldApi, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
+import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen } from "./higgsfield";
 
-const done = (extra: Partial<V2Response>): V2Response => ({
-  status: "completed", request_id: "req-1", status_url: "", cancel_url: "", ...extra,
-});
 const noSleep = async () => {};
+const IMG = "higgsfield-ai/soul/v2/standard";
+const inProgress = async (): Promise<HfStatus> => ({ status: "in_progress", request_id: "req-1" });
+const completedImg = (id = "req-1", url = "https://cdn/img.png") => async (): Promise<HfStatus> => ({ status: "completed", request_id: id, images: [{ url }] });
+const withStatus = (status: string, id = "req-1") => async (): Promise<HfStatus> => ({ status, request_id: id });
+
+function fakeApi(script: { submit?: (() => Promise<string>)[]; statuses?: Record<string, (() => Promise<HfStatus>)[]> }) {
+  const calls = { submit: 0, status: 0 };
+  const inputs: { model: string; input: Record<string, unknown> }[] = [];
+  const api: HiggsfieldApi = {
+    async submit(model, input) { calls.submit++; inputs.push({ model, input }); const next = script.submit?.shift(); return next ? next() : "req-1"; },
+    async status(id) { calls.status++; const q = script.statuses?.[id]; const next = q?.shift(); if (!next) throw new Error(`no scripted status for ${id}`); return next(); },
+  };
+  return { api, calls, inputs };
+}
+
+const make = (api: HiggsfieldApi, pending = new MemoryPendingStore(), concurrency = 4, opts: ConstructorParameters<typeof HiggsfieldGateway>[3] = {}) =>
+  new HiggsfieldGateway(api, pending, concurrency, { sleep: noSleep, ...opts });
 
 describe("HiggsfieldImageGen", () => {
-  it("requests a single 9:16 1080p image and returns its URL", async () => {
-    const subscribe = vi.fn(async () => done({ images: [{ url: "https://cdn/img.png" }] }));
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(subscribe, 4, { sleep: noSleep }));
-    expect(await gen.generate({ prompt: "a cat" })).toEqual({ url: "https://cdn/img.png", requestId: "req-1" });
-    expect(subscribe).toHaveBeenCalledWith("higgsfield-ai/soul/v2/standard", {
-      prompt: "a cat", aspect_ratio: "9:16", resolution: "1080p", batch_size: 1,
-    });
-  });
-
-  it("turns nsfw into a PermanentProviderError carrying the request id", async () => {
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(async () => done({ status: "nsfw" }), 1, { sleep: noSleep }));
-    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
-    expect(err).toBeInstanceOf(PermanentProviderError);
-    expect(err.message).toMatch(/content moderation/);
-    expect(err.requestId).toBe("req-1");
+  it("submits a single 9:16 1080p image, polls, and returns url + request id", async () => {
+    const { api, calls, inputs } = fakeApi({ statuses: { "req-1": [inProgress, completedImg()] } });
+    const pending = new MemoryPendingStore();
+    const gen = new HiggsfieldImageGen(make(api, pending));
+    expect(await gen.generate({ prompt: "a cat", resumeKey: "k" })).toEqual({ url: "https://cdn/img.png", requestId: "req-1" });
+    expect(inputs).toEqual([{ model: IMG, input: { prompt: "a cat", aspect_ratio: "9:16", resolution: "1080p", batch_size: 1 } }]);
+    expect(calls.submit).toBe(1);
+    expect(pending.records.size).toBe(0);
   });
 });
 
 describe("HiggsfieldVideoGen", () => {
   it("sends image-to-video with audio disabled", async () => {
-    const subscribe = vi.fn(async () => done({ video: { url: "https://cdn/v.mp4" } }));
-    const gen = new HiggsfieldVideoGen(new HiggsfieldGateway(subscribe, 1, { sleep: noSleep }), undefined, "720p");
-    await gen.imageToVideo({ imageUrl: "https://cdn/i.png", prompt: "push in", durationSec: 5 });
-    expect(subscribe).toHaveBeenCalledWith("bytedance/seedance-2.5/image-to-video", {
-      image_url: "https://cdn/i.png", prompt: "push in", duration: 5, resolution: "720p", generate_audio: false,
+    const { api, inputs } = fakeApi({ statuses: { "req-1": [async () => ({ status: "completed", request_id: "req-1", video: { url: "https://cdn/v.mp4" } })] } });
+    const gen = new HiggsfieldVideoGen(make(api, undefined, 1), undefined, "720p");
+    expect((await gen.imageToVideo({ imageUrl: "https://cdn/i.png", prompt: "push in", durationSec: 5 })).url).toBe("https://cdn/v.mp4");
+    expect(inputs[0]).toEqual({
+      model: "bytedance/seedance-2.5/image-to-video",
+      input: { image_url: "https://cdn/i.png", prompt: "push in", duration: 5, resolution: "720p", generate_audio: false },
     });
   });
 
-  it("rejects durations outside 4–30 integer seconds before calling the API", async () => {
-    const subscribe = vi.fn();
-    const gen = new HiggsfieldVideoGen(new HiggsfieldGateway(subscribe, 1));
+  it("rejects durations outside 4-30 integer seconds before calling the API", async () => {
+    const { api, calls } = fakeApi({});
+    const gen = new HiggsfieldVideoGen(make(api, undefined, 1));
     await expect(gen.imageToVideo({ imageUrl: "u", prompt: "p", durationSec: 3 })).rejects.toThrow(RangeError);
     await expect(gen.imageToVideo({ imageUrl: "u", prompt: "p", durationSec: 5.5 })).rejects.toThrow(RangeError);
-    expect(subscribe).not.toHaveBeenCalled();
+    expect(calls.submit).toBe(0);
   });
 });
 
-describe("HiggsfieldGateway retries", () => {
-  it("retries the concurrency-limit 400 instead of failing the scene", async () => {
-    let calls = 0;
-    const subscribe = async () => {
-      calls++;
-      if (calls < 3) throw new BadInputError("Maximum number of concurrent requests reached");
-      return done({ images: [{ url: "https://cdn/ok.png" }] });
-    };
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(subscribe, 1, { sleep: noSleep }));
-    expect((await gen.generate({ prompt: "x" })).url).toBe("https://cdn/ok.png");
-    expect(calls).toBe(3);
+describe("HiggsfieldGateway submit", () => {
+  it("retries a 502 submit and uses the eventual request id", async () => {
+    const { api, calls } = fakeApi({
+      submit: [async () => { throw new HfHttpError(502, "bad gateway"); }, async () => { throw new HfHttpError(502, "bad gateway"); }, async () => "req-2"],
+      statuses: { "req-2": [completedImg("req-2")] },
+    });
+    const res = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" });
+    expect(calls.submit).toBe(3);
+    expect(res.requestId).toBe("req-2");
   });
 
-  it("does not retry when credits run out", async () => {
-    let calls = 0;
-    const subscribe = async () => {
-      calls++;
-      throw new NotEnoughCreditsError();
-    };
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(subscribe, 1, { sleep: noSleep }));
-    await expect(gen.generate({ prompt: "x" })).rejects.toBeInstanceOf(NotEnoughCreditsError);
-    expect(calls).toBe(1);
+  it("does not retry a 422 submit", async () => {
+    const { api, calls } = fakeApi({ submit: [async () => { throw new HfHttpError(422, "bad input"); }] });
+    await expect(new HiggsfieldImageGen(make(api)).generate({ prompt: "x" })).rejects.toBeInstanceOf(HfHttpError);
+    expect(calls.submit).toBe(1);
   });
 
-  it("classifies errors", () => {
-    expect(isTransientHiggsfieldError(new BadInputError("Maximum number of concurrent requests"))).toBe(true);
-    expect(isTransientHiggsfieldError(new BadInputError("prompt: field required"))).toBe(false);
-    expect(isTransientHiggsfieldError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(false);
+  it("retries the concurrency-limit 400", async () => {
+    const { api, calls } = fakeApi({
+      submit: [async () => { throw new HfHttpError(400, "Maximum number of concurrent requests reached"); }],
+      statuses: { "req-1": [completedImg()] },
+    });
+    await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" });
+    expect(calls.submit).toBe(2);
+  });
+});
+
+describe("HiggsfieldGateway polling and resume", () => {
+  it("tolerates 5xx and network errors while polling without re-submitting", async () => {
+    const { api, calls } = fakeApi({
+      statuses: { "req-1": [
+        async () => { throw new HfHttpError(502, "bad gateway"); },
+        async () => { throw Object.assign(new Error("reset"), { code: "ECONNRESET" }); },
+        completedImg(),
+      ] },
+    });
+    const res = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" });
+    expect(res.requestId).toBe("req-1");
+    expect(calls.submit).toBe(1);
   });
 
-  it("detects concurrent limit from BadInputError details array", () => {
-    const err = new BadInputError([{ type: "value_error", loc: ["body"], msg: "Maximum number of concurrent requests reached" }]);
-    expect(isTransientHiggsfieldError(err)).toBe(true);
+  it("on timeout throws a permanent error but keeps the pending record", async () => {
+    let t = 0;
+    const { api } = fakeApi({ statuses: { "req-1": Array.from({ length: 50 }, () => inProgress) } });
+    const pending = new MemoryPendingStore();
+    const gw = make(api, pending, 1, { now: () => t, sleep: async (ms) => { t += ms; } });
+    const err = await gw.run(IMG, {}, (r) => r.images?.[0]?.url, { resumeKey: "k", maxWaitMs: 60_000 * 10 }).catch((e) => e);
+    expect(err).toBeInstanceOf(PermanentProviderError);
+    expect(err.message).toMatch(/still processing after \d+ min.*retry to pick it up/);
+    expect(err.requestId).toBe("req-1");
+    expect(await pending.get("k")).toMatchObject({ requestId: "req-1" });
   });
 
-  it("limits concurrent requests to the account limit", async () => {
-    let active = 0;
-    let peak = 0;
-    const subscribe = async () => {
-      active++;
-      peak = Math.max(peak, active);
-      await new Promise((r) => setTimeout(r, 10));
-      active--;
-      return done({ images: [{ url: "https://cdn/x.png" }] });
-    };
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(subscribe, 2, { sleep: noSleep }));
-    await Promise.all(Array.from({ length: 6 }, () => gen.generate({ prompt: "p" })));
-    expect(peak).toBe(2);
+  it("resumes a stored request id with zero submits and clears the record", async () => {
+    const { api, calls } = fakeApi({ statuses: { "req-9": [completedImg("req-9")] } });
+    const pending = new MemoryPendingStore();
+    await pending.set("k", { requestId: "req-9", model: IMG, submittedAt: "2026-10-01T00:00:00.000Z" });
+    const res = await new HiggsfieldImageGen(make(api, pending)).generate({ prompt: "x", resumeKey: "k" });
+    expect(res.requestId).toBe("req-9");
+    expect(calls.submit).toBe(0);
+    expect(pending.records.size).toBe(0);
   });
 
-  it("converts status 'failed' to PermanentProviderError with request id", async () => {
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(async () => done({ status: "failed" }), 1, { sleep: noSleep }));
-    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
+  it("forgets an id the provider does not know (404) and submits fresh", async () => {
+    const { api, calls } = fakeApi({
+      statuses: { "req-9": [async () => { throw new HfHttpError(404, "not found"); }], "req-1": [completedImg()] },
+    });
+    const pending = new MemoryPendingStore();
+    await pending.set("k", { requestId: "req-9", model: IMG, submittedAt: "2026-10-01T00:00:00.000Z" });
+    const res = await new HiggsfieldImageGen(make(api, pending)).generate({ prompt: "x", resumeKey: "k" });
+    expect(res.requestId).toBe("req-1");
+    expect(calls.submit).toBe(1);
+    expect(pending.records.size).toBe(0);
+  });
+
+  it("terminal failure clears pending so the next run submits fresh", async () => {
+    const { api, calls } = fakeApi({ statuses: { "req-1": [withStatus("failed"), completedImg()] } });
+    const pending = new MemoryPendingStore();
+    const gen = new HiggsfieldImageGen(make(api, pending));
+    const err = await gen.generate({ prompt: "x", resumeKey: "k" }).catch((e) => e);
     expect(err).toBeInstanceOf(PermanentProviderError);
     expect(err.message).toMatch(/ended with status "failed"/);
     expect(err.requestId).toBe("req-1");
+    expect(pending.records.size).toBe(0);
+    await gen.generate({ prompt: "x", resumeKey: "k" });
+    expect(calls.submit).toBe(2);
   });
 
-  it("detects completed without output URL", async () => {
-    const gen = new HiggsfieldImageGen(new HiggsfieldGateway(async () => done({ images: [] }), 1, { sleep: noSleep }));
-    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
+  it("turns nsfw into a content moderation error", async () => {
+    const { api } = fakeApi({ statuses: { "req-1": [withStatus("nsfw")] } });
+    const err = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" }).catch((e) => e);
     expect(err).toBeInstanceOf(PermanentProviderError);
-    expect(err.message).toMatch(/completed without an output URL/);
-    expect(err.requestId).toBe("req-1");
+    expect(err.message).toMatch(/content moderation/);
   });
 
-  it("converts status 'canceled' to PermanentProviderError with request id", async () => {
-    const gen = new HiggsfieldImageGen(
-      new HiggsfieldGateway(async () => done({ status: "canceled" as V2Response["status"] }), 1, { sleep: noSleep }),
-    );
-    const err = await gen.generate({ prompt: "x" }).catch((e) => e);
-    expect(err).toBeInstanceOf(PermanentProviderError);
-    expect(err.message).toMatch(/ended with status "canceled"/);
-    expect(err.requestId).toBe("req-1");
+  it("detects completed without output URL and canceled", async () => {
+    const a = fakeApi({ statuses: { "req-1": [async () => ({ status: "completed", request_id: "req-1", images: [] })] } });
+    await expect(new HiggsfieldImageGen(make(a.api)).generate({ prompt: "x" })).rejects.toThrow(/completed without an output URL/);
+    const b = fakeApi({ statuses: { "req-1": [withStatus("canceled")] } });
+    await expect(new HiggsfieldImageGen(make(b.api)).generate({ prompt: "x" })).rejects.toThrow(/ended with status "canceled"/);
+  });
+
+  it("limits in-flight runs to the concurrency", async () => {
+    let active = 0;
+    let peak = 0;
+    const api: HiggsfieldApi = {
+      async submit() { active++; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 10)); return "req-1"; },
+      async status() { active--; return { status: "completed", request_id: "req-1", images: [{ url: "https://cdn/x.png" }] }; },
+    };
+    const gen = new HiggsfieldImageGen(make(api, undefined, 2));
+    await Promise.all(Array.from({ length: 6 }, () => gen.generate({ prompt: "p" })));
+    expect(peak).toBe(2);
+  });
+});
+
+describe("httpHiggsfieldApi", () => {
+  it("POSTs the submit with auth and returns request_id", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ status: "queued", request_id: "req-1" }));
+    const api = httpHiggsfieldApi("id:secret", "https://api.higgsfield.ai", fetchImpl as unknown as typeof fetch);
+    expect(await api.submit(IMG, { prompt: "a" })).toBe("req-1");
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.higgsfield.ai/higgsfield-ai/soul/v2/standard");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Key id:secret");
+    expect(JSON.parse(init.body as string)).toEqual({ prompt: "a" });
+  });
+
+  it("GETs status from /requests/{id}/status", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ status: "in_progress", request_id: "req-1" }));
+    const api = httpHiggsfieldApi("id:secret", "https://api.higgsfield.ai", fetchImpl as unknown as typeof fetch);
+    expect((await api.status("req-1")).status).toBe("in_progress");
+    expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toBe("https://api.higgsfield.ai/requests/req-1/status");
+  });
+
+  it("throws HfHttpError with the status on non-OK", async () => {
+    const fetchImpl = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    const err = await httpHiggsfieldApi("a:b", undefined, fetchImpl).status("r").catch((e) => e);
+    expect(err).toBeInstanceOf(HfHttpError);
+    expect(err.status).toBe(503);
+  });
+
+  it("classifies retryable submit errors", () => {
+    expect(isRetryableSubmitError(new HfHttpError(502, "x"))).toBe(true);
+    expect(isRetryableSubmitError(new HfHttpError(429, "x"))).toBe(true);
+    expect(isRetryableSubmitError(new HfHttpError(400, "Maximum number of concurrent requests"))).toBe(true);
+    expect(isRetryableSubmitError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isRetryableSubmitError(new HfHttpError(422, "x"))).toBe(false);
+    expect(isRetryableSubmitError(new HfHttpError(400, "prompt required"))).toBe(false);
   });
 });
 

@@ -7,7 +7,8 @@
 2. Root `.env.local` (worker only; never commit). See `.env.example` for all available variables:
    - `HF_CREDENTIALS`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_HE`, `ELEVENLABS_VOICE_EN`, `ANTHROPIC_API_KEY` (workspace-scoped key)
    - `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Supabase → Project Settings → API Keys → secret key)
-   - optional: `REEL_SPEND_CAP_USD` (default 10), `CLAUDE_MODEL`, `HF_VIDEO_RESOLUTION`, `WORKER_POLL_MS`
+   - optional: `REEL_SPEND_CAP_USD` (default 10), `CLAUDE_MODEL`, `HF_VIDEO_RESOLUTION`, `HF_MAX_WAIT_MINUTES` (default 40), `WORKER_POLL_MS`
+   - A scene that times out on Higgsfield is not lost — Retry picks up the same request instead of paying again.
 
 3. `apps/web/.env.local` (see `apps/web/.env.example` for reference):
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (publishable key only)

@@ -1,67 +1,90 @@
-import {
-  BadInputError,
-  createHiggsfieldClient,
-  type V2Response,
-} from "@higgsfield/client/v2";
 import { PermanentProviderError } from "@reel/core";
 import { FETCH_TIMEOUT_MS } from "../download";
+import type { PendingStore } from "../pending-store";
 import { Semaphore, withRetry } from "../retry";
+import { HfHttpError, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
 import type { GenResult, ImageGen, MediaUploader, VideoGen } from "./types";
 
-export type SubscribeFn = (endpoint: string, input: Record<string, unknown>) => Promise<V2Response>;
+const TERMINAL = new Set(["completed", "failed", "nsfw", "canceled", "cancelled"]);
+export const IMAGE_MAX_WAIT_MS = 10 * 60 * 1000;
 
-export function sdkSubscribe(credentials: string): SubscribeFn {
-  // Video generation can take several minutes; the SDK default poll limit is 5.
-  const client = createHiggsfieldClient({ credentials, maxPollTime: 15 * 60 * 1000 });
-  return (endpoint, input) => client.subscribe(endpoint, { input, withPolling: true });
-}
-
-export function isTransientHiggsfieldError(err: unknown): boolean {
-  // subscribe() is not idempotent: it does submit + poll in one call, and retrying during the poll phase
-  // re-submits a running, already-billed job. Only retry the concurrency-limit BadInputError (transient queue state).
-  if (err instanceof BadInputError) {
-    return /concurrent/i.test(`${err.message} ${JSON.stringify((err as { details?: unknown[] }).details ?? [])}`);
-  }
-  return false;
-}
+type GatewayOpts = { pollMs?: number; submitBaseDelayMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number; log?: (m: string) => void };
 
 export class HiggsfieldGateway {
   private readonly semaphore: Semaphore;
-
-  constructor(
-    private readonly subscribe: SubscribeFn,
-    concurrency: number,
-    private readonly opts: { baseDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
-  ) {
+  constructor(private readonly api: HiggsfieldApi, private readonly pending: PendingStore, concurrency: number, private readonly opts: GatewayOpts = {}) {
     this.semaphore = new Semaphore(concurrency);
   }
 
-  async run(endpoint: string, input: Record<string, unknown>, pick: (r: V2Response) => string | undefined): Promise<GenResult> {
-    const result = await this.semaphore.run(() =>
-      withRetry(() => this.subscribe(endpoint, input), {
-        attempts: 4,
-        baseDelayMs: this.opts.baseDelayMs ?? 5000,
-        isTransient: isTransientHiggsfieldError,
-        sleep: this.opts.sleep,
-      }),
-    );
-    // The SDK types omit "canceled", which the API can also return; compare as a plain string.
-    const status: string = result.status;
-    const url = pick(result);
-    if (status === "completed" && url) return { url, requestId: result.request_id };
-    const reason =
-      status === "nsfw" ? "was blocked by content moderation"
-      : status === "completed" ? "completed without an output URL"
-      : `ended with status "${status}"`;
-    throw new PermanentProviderError(`Higgsfield ${endpoint} ${reason}`, "higgsfield", result.request_id);
+  async run(model: string, input: Record<string, unknown>, pick: (r: HfStatus) => string | undefined, run: { resumeKey?: string; maxWaitMs: number }): Promise<GenResult> {
+    const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const now = this.opts.now ?? Date.now;
+    const log = this.opts.log ?? (() => {});
+    return this.semaphore.run(async () => {
+      let requestId: string | null = null;
+      const resumed = run.resumeKey ? await this.pending.get(run.resumeKey) : null;
+      if (resumed) {
+        requestId = resumed.requestId;
+        log(`resuming Higgsfield request ${requestId} instead of submitting again`);
+      }
+      for (;;) {
+        if (!requestId) {
+          requestId = await withRetry(() => this.api.submit(model, input), {
+            attempts: 4,
+            baseDelayMs: this.opts.submitBaseDelayMs ?? 5000,
+            isTransient: isRetryableSubmitError,
+            sleep,
+          });
+          if (run.resumeKey) await this.pending.set(run.resumeKey, { requestId, model, submittedAt: new Date(now()).toISOString() });
+        }
+        const result = await this.waitFor(requestId, run.maxWaitMs, sleep, now);
+        if (result === "unknown") {
+          // The provider no longer knows this id: forget it and submit fresh.
+          if (run.resumeKey) await this.pending.delete(run.resumeKey);
+          requestId = null;
+          continue;
+        }
+        if (run.resumeKey) await this.pending.delete(run.resumeKey);
+        const status: string = result.status;
+        const url = pick(result);
+        if (status === "completed" && url) return { url, requestId };
+        const reason =
+          status === "nsfw" ? "was blocked by content moderation"
+          : status === "completed" ? "completed without an output URL"
+          : `ended with status "${status}"`;
+        throw new PermanentProviderError(`Higgsfield ${model} ${reason} (request ${requestId})`, "higgsfield", requestId);
+      }
+    });
+  }
+
+  private async waitFor(requestId: string, maxWaitMs: number, sleep: (ms: number) => Promise<void>, now: () => number): Promise<HfStatus | "unknown"> {
+    const deadline = now() + maxWaitMs;
+    for (;;) {
+      try {
+        const s = await this.api.status(requestId);
+        if (TERMINAL.has(s.status)) return s;
+      } catch (err) {
+        if (err instanceof HfHttpError && err.status === 404) return "unknown";
+        // Status polling is read-only: tolerate 5xx, timeouts and network errors.
+        const tolerable = (err instanceof HfHttpError && (err.status >= 500 || err.status === 429)) || !(err instanceof HfHttpError);
+        if (!tolerable) throw err;
+      }
+      if (now() >= deadline) {
+        throw new PermanentProviderError(
+          `Higgsfield request ${requestId} still processing after ${Math.round(maxWaitMs / 60000)} min; retry to pick it up without paying again`,
+          "higgsfield",
+          requestId,
+        );
+      }
+      await sleep(this.opts.pollMs ?? 5000);
+    }
   }
 }
 
 export class HiggsfieldImageGen implements ImageGen {
   constructor(private readonly gateway: HiggsfieldGateway, readonly model = "higgsfield-ai/soul/v2/standard") {}
-
-  generate({ prompt }: { prompt: string }): Promise<GenResult> {
-    return this.gateway.run(this.model, { prompt, aspect_ratio: "9:16", resolution: "1080p", batch_size: 1 }, (r) => r.images?.[0]?.url);
+  generate({ prompt, resumeKey }: { prompt: string; resumeKey?: string }): Promise<GenResult> {
+    return this.gateway.run(this.model, { prompt, aspect_ratio: "9:16", resolution: "1080p", batch_size: 1 }, (r) => r.images?.[0]?.url, { resumeKey, maxWaitMs: IMAGE_MAX_WAIT_MS });
   }
 }
 
@@ -70,9 +93,9 @@ export class HiggsfieldVideoGen implements VideoGen {
     private readonly gateway: HiggsfieldGateway,
     readonly model = "bytedance/seedance-2.5/image-to-video",
     readonly resolution: "480p" | "720p" | "1080p" = "720p",
+    private readonly maxWaitMs = 40 * 60 * 1000,
   ) {}
-
-  async imageToVideo({ imageUrl, prompt, durationSec }: { imageUrl: string; prompt: string; durationSec: number }): Promise<GenResult> {
+  async imageToVideo({ imageUrl, prompt, durationSec, resumeKey }: { imageUrl: string; prompt: string; durationSec: number; resumeKey?: string }): Promise<GenResult> {
     if (!Number.isInteger(durationSec) || durationSec < 4 || durationSec > 30) {
       throw new RangeError(`durationSec must be an integer from 4 to 30, got ${durationSec}`);
     }
@@ -80,6 +103,7 @@ export class HiggsfieldVideoGen implements VideoGen {
       this.model,
       { image_url: imageUrl, prompt, duration: durationSec, resolution: this.resolution, generate_audio: false },
       (r) => r.video?.url,
+      { resumeKey, maxWaitMs: this.maxWaitMs },
     );
   }
 }

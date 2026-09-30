@@ -13,6 +13,7 @@ export type EngineConfig = {
   higgsfield: {
     credentials?: string;
     concurrency: number;
+    maxWaitMinutes: number;
     imageModel: string;
     videoModel: string;
     videoResolution: "480p" | "720p" | "1080p";
@@ -36,6 +37,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: { pr
   if (!Number.isFinite(cap) || cap <= 0) throw new Error(`REEL_SPEND_CAP_USD must be a positive number (got "${env.REEL_SPEND_CAP_USD}")`);
   const concurrency = Number(env.HF_CONCURRENCY ?? "4");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error(`HF_CONCURRENCY must be an integer ≥ 1 (got "${env.HF_CONCURRENCY}")`);
+  const maxWaitMinutes = Number(env.HF_MAX_WAIT_MINUTES ?? "40");
+  if (!Number.isInteger(maxWaitMinutes) || maxWaitMinutes < 1) throw new Error(`HF_MAX_WAIT_MINUTES must be an integer ≥ 1 (got "${env.HF_MAX_WAIT_MINUTES}")`);
   return {
     providers: overrides.providers ?? "real",
     cacheDir: path.resolve(REPO_ROOT, env.REEL_CACHE_DIR ?? ".reel-cache"),
@@ -44,6 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: { pr
     higgsfield: {
       credentials: env.HF_CREDENTIALS || undefined,
       concurrency,
+      maxWaitMinutes,
       imageModel: DEFAULT_MODELS.image,
       videoModel: DEFAULT_MODELS.video,
       videoResolution: resolution as EngineConfig["higgsfield"]["videoResolution"],
