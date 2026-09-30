@@ -1,0 +1,17 @@
+{
+  "name": "@reel/engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/pipeline.ts" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
+    "@elevenlabs/elevenlabs-js": "^2.70.0",
+    "@higgsfield/client": "^0.2.6",
+    "@reel/core": "*",
+    "@reel/media": "*",
+    "@reel/video": "*",
+    "dotenv": "^18.0.4",
+    "zod": "^4.6.5"
+  }
+}
