@@ -1,8 +1,7 @@
 import type { Database } from "@reel/db";
 import { createServerClient } from "@supabase/ssr";
+import { isPublicPath } from "@/lib/public-paths";
 import { NextResponse, type NextRequest } from "next/server";
-
-const PUBLIC_PREFIXES = ["/login", "/auth"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -21,12 +20,14 @@ export async function updateSession(request: NextRequest) {
   });
   // Do not run code between createServerClient and getClaims (session refresh depends on it).
   const { data } = await supabase.auth.getClaims();
-  const isPublic = PUBLIC_PREFIXES.some((p) => request.nextUrl.pathname.startsWith(p));
+  const isPublic = isPublicPath(request.nextUrl.pathname);
   if (!data?.claims && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
-    return NextResponse.redirect(url);
+    const redirect = NextResponse.redirect(url);
+    response.cookies.getAll().forEach((c) => redirect.cookies.set(c));
+    return redirect;
   }
   return response;
 }
