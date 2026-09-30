@@ -3,6 +3,7 @@ import {
   CaptionPresetSchema,
   estimateCost,
   LanguageSchema,
+  PaletteColorSchema,
   parseStoryboard,
   SceneFailuresError,
   type CostEstimate,
@@ -63,7 +64,16 @@ async function planCommand(args: string[]): Promise<void> {
     },
   });
   if (!values.brief || !values.out) throw new UsageError("plan needs --brief and --out");
-  const language = LanguageSchema.parse(values.lang);
+  const languageResult = LanguageSchema.safeParse(values.lang);
+  if (!languageResult.success) throw new UsageError(`--lang must be he or en, got "${values.lang}"`);
+  const language = languageResult.data;
+  const captionResult = CaptionPresetSchema.safeParse(values.captions);
+  if (!captionResult.success) throw new UsageError(`--captions must be bold_pop or clean, got "${values.captions}"`);
+  const palette = values.palette.split(",").map((c) => c.trim());
+  const badColor = palette.find((c) => !PaletteColorSchema.safeParse(c).success);
+  if (badColor !== undefined || palette.length > 5) {
+    throw new UsageError(`--palette needs 1-5 comma-separated #RRGGBB colors, got "${values.palette}"`);
+  }
   const length = Number(values.length);
   if (!LENGTHS.includes(length as (typeof LENGTHS)[number])) throw new UsageError(`--length must be one of ${LENGTHS.join(", ")}`);
   if (values.pacing !== "calm" && values.pacing !== "punchy") throw new UsageError("--pacing must be calm or punchy");
@@ -78,12 +88,12 @@ async function planCommand(args: string[]): Promise<void> {
     language,
     targetDurationSec: length as PlanRequest["targetDurationSec"],
     pacing: values.pacing,
-    captionPreset: CaptionPresetSchema.parse(values.captions),
-    palette: values.palette.split(",").map((c) => c.trim()),
+    captionPreset: captionResult.data,
+    palette,
     voice: { voiceId, modelId: config.elevenlabs.modelId },
   };
   const workDir = await mkdtemp(join(tmpdir(), "reel-plan-"));
-  console.log("Planning with Claude…");
+  console.log(values.fake ? "Planning (fake)…" : "Planning with Claude…");
   const sb = await createPlannerFor(config, workDir).plan(req);
   const outDir = resolve(values.out);
   await mkdir(outDir, { recursive: true });
@@ -129,7 +139,7 @@ async function makeCommand(args: string[]): Promise<void> {
   const tmpDir = await mkdtemp(join(tmpdir(), "reel-make-"));
   const deps = {
     providers: createProviders(config, tmpDir),
-    store: new FileAssetStore(config.cacheDir),
+    store: new FileAssetStore(config.providers === "fake" ? join(config.cacheDir, "fake") : config.cacheDir),
     tmpDir,
     log: (msg: string) => console.log(`  ${msg}`),
   };

@@ -81,7 +81,7 @@ export function buildStoryboard(draft: StoryboardDraft, req: PlanRequest): Story
       id: `s${i + 1}`,
       script: scene.script,
       visual: { kind: scene.visual.kind, prompt: scene.visual.prompt.trim() || undefined, motion: scene.visual.motion },
-      overlays: scene.overlays.slice(0, 3),
+      overlays: scene.overlays.slice(0, 2),
       transitionOut: scene.transitionOut,
     })),
   });

@@ -9,6 +9,7 @@ export const OverlayPositionSchema = z.enum(["top", "center", "bottom"]);
 export const OverlayAnimationSchema = z.enum(["pop", "fade", "type"]);
 export const VisualKindSchema = z.enum(["broll_video", "image", "avatar", "footage", "graphic"]);
 export const CaptionPresetSchema = z.enum(["bold_pop", "clean"]);
+export const PaletteColorSchema = z.string().regex(/^#[0-9a-f]{6}$/i, "palette colors must be #RRGGBB");
 export const FormatSchema = z.enum(["faceless", "avatar", "character", "footage"]);
 
 const FACELESS_KINDS = new Set(["broll_video", "image", "graphic"]);
@@ -59,7 +60,7 @@ export const StoryboardSchema = z
     style: z.object({
       captionPreset: CaptionPresetSchema,
       font: z.string().min(1).default("Heebo"),
-      palette: z.array(z.string().regex(/^#[0-9a-f]{6}$/i, "palette colors must be #RRGGBB")).min(1).max(5),
+      palette: z.array(PaletteColorSchema).min(1).max(5),
       musicAssetId: z.string().min(1).optional(),
       pacing: z.enum(["calm", "punchy"]),
     }),
