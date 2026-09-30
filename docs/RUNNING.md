@@ -13,9 +13,14 @@
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (publishable key only)
    - `SITE_URL=http://localhost:3000` (server-only base URL used in sign-in emails; must be in Supabase Auth → Redirect URLs as `http://localhost:3000/auth/confirm`)
 
-4. Supabase dashboard: public sign-ups off; Site URL and redirect `http://localhost:3000/auth/confirm`; the Magic Link template points to `/auth/confirm?token_hash={{ .TokenHash }}&type=email`; invite teammates.
+4. Supabase dashboard (Authentication):
+   - Public sign-ups off.
+   - URL Configuration: Site URL `http://localhost:3000`; Redirect URLs include `http://localhost:3000/auth/confirm`.
+   - Email Templates, Magic Link: the link must be `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email`
+   - Email Templates, Invite: the link must be `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite`
+   - Invite your teammates.
 
-5. Check: `npm run smoke:supabase`.
+5. Check: `npm run smoke:supabase`. Preconditions: at least one invited user exists and no real jobs are queued.
 
 ## Every day
 
@@ -25,7 +30,7 @@
 
 ### Worker lifecycle
 
-Press Ctrl-C once to stop the worker after its current job completes; a second Ctrl-C force-quits. A job interrupted by a force-quit is requeued automatically (up to 3 attempts) when a worker next starts or within a minute.
+Press Ctrl-C once to stop the worker after its current job completes; a second Ctrl-C force-quits. A job whose worker stopped heartbeating is requeued after 120 s without a heartbeat (checked every minute and at worker start), up to 3 attempts.
 
 ### Fake worker note
 
