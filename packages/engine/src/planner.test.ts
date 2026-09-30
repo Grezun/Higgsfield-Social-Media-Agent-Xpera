@@ -101,7 +101,20 @@ describe("length enforcement", () => {
     expect(sb.scenes).toHaveLength(20);
   });
 
+  it("keeps a long first storyboard when the repair is unusable", async () => {
+    const model = vi.fn<DraftModel>().mockResolvedValueOnce(reply(longDraft())).mockResolvedValueOnce(reply(null));
+    const sb = await createPlanner(model).plan(REQ);
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(sb.scenes).toHaveLength(20);
+  });
+
+  it("returns a long second storyboard when the first was schema-invalid", async () => {
+    const model = vi.fn<DraftModel>().mockResolvedValueOnce(reply(null)).mockResolvedValueOnce(reply(longDraft()));
+    const sb = await createPlanner(model).plan(REQ);
+    expect(sb.scenes).toHaveLength(20);
+  });
+
   it("states hard limits in the prompt", () => {
-    expect(userPrompt(REQ)).toMatch(/Hard limits: at most 12 scenes and about 69 spoken words/);
+    expect(userPrompt(REQ)).toMatch(/Stay within 12 scenes and about 69 spoken words/);
   });
 });

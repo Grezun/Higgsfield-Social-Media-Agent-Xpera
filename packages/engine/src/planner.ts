@@ -55,14 +55,13 @@ export function systemPrompt(): string {
 }
 
 export function userPrompt(req: PlanRequest): string {
-  const wordsPerSecond = req.language === "he" ? 2.3 : 2.6;
-  const words = Math.round(req.targetDurationSec * wordsPerSecond);
+  const words = targetWordsFor(req.targetDurationSec, req.language);
   const scenes = Math.max(3, Math.round(req.targetDurationSec / (req.pacing === "punchy" ? 3 : 5)));
   return [
     `Brief: ${req.brief}`,
     `Language of the voiceover and overlays: ${req.language === "he" ? "Hebrew" : "English"}.`,
     `Target length: ${req.targetDurationSec} seconds, about ${words} spoken words in total, about ${scenes} scenes.`,
-    `Hard limits: at most ${maxScenesFor(req.targetDurationSec)} scenes and about ${targetWordsFor(req.targetDurationSec, req.language)} spoken words. Longer reels are rejected.`,
+    `Stay within ${maxScenesFor(req.targetDurationSec)} scenes and about ${targetWordsFor(req.targetDurationSec, req.language)} spoken words in total.`,
     `Pacing: ${req.pacing}.`,
     "Keep each scene's voiceover under 400 characters.",
   ].join("\n");
@@ -128,7 +127,8 @@ export function createPlanner(model: DraftModel): Planner {
       const second = attempt(await model({ system, user: repairUser }), req);
       if (second.ok) return second.storyboard;
       // Valid but still over length: return it — the editor shows the length warning.
-      if (second.storyboard) return second.storyboard;
+      const fallback = second.storyboard ?? firstAttempt.storyboard;
+      if (fallback) return fallback;
       throw new Error(`Claude returned an invalid storyboard twice:\n${second.error}`);
     },
   };

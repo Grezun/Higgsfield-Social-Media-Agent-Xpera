@@ -1,9 +1,8 @@
-import { estimateSceneSeconds } from "./cost";
+import { estimateSceneSeconds, WORDS_PER_SECOND } from "./cost";
 import type { Language, Storyboard } from "./schema/storyboard";
 
 /** How far over the target a storyboard may run before the planner repairs it or the editor warns. */
 export const LENGTH_TOLERANCE = 1.25;
-const WORDS_PER_SECOND: Record<Language, number> = { he: 2.3, en: 2.6 };
 const SECONDS_PER_SCENE_MIN = 2.5;
 
 export const maxScenesFor = (targetSec: number) => Math.ceil(targetSec / SECONDS_PER_SCENE_MIN);
