@@ -11,6 +11,13 @@ export function wordsToCaptions(words: Word[]): Caption[] {
   return words.map((w) => ({ text: ` ${w.text}`, startMs: w.startMs, endMs: w.endMs, timestampMs: w.startMs, confidence: null }));
 }
 
+/** Index of the token being spoken at nowMs; it stays active through the gap before the next token. -1 before the first. */
+export function activeTokenIndex(tokens: { fromMs: number }[], nowMs: number): number {
+  let idx = -1;
+  for (let i = 0; i < tokens.length; i++) if (nowMs >= tokens[i].fromMs) idx = i;
+  return idx;
+}
+
 function tokenStyle(preset: Timeline["style"]["captionPreset"], active: boolean, accent: string): React.CSSProperties {
   if (preset === "clean") {
     return {
@@ -33,6 +40,7 @@ const CaptionPage: React.FC<{ page: TikTokPage; timeline: Timeline }> = ({ page,
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const nowMs = page.startMs + (frame / fps) * 1000;
+  const activeIdx = activeTokenIndex(page.tokens, nowMs);
   return (
     <div
       dir={timeline.direction}
@@ -55,8 +63,8 @@ const CaptionPage: React.FC<{ page: TikTokPage; timeline: Timeline }> = ({ page,
           style={{
             display: "inline-block",
             unicodeBidi: "isolate",
-            margin: "0 0.12em",
-            ...tokenStyle(timeline.style.captionPreset, nowMs >= token.fromMs && nowMs < token.toMs, timeline.style.palette[0]),
+            margin: "0 0.28em",
+            ...tokenStyle(timeline.style.captionPreset, i === activeIdx, timeline.style.palette[0]),
           }}
         >
           {token.text.trim()}
