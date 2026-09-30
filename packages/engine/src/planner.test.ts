@@ -74,3 +74,34 @@ describe("userPrompt", () => {
     expect(p).toMatch(/about 10 scenes/);
   });
 });
+
+const longDraft = (): StoryboardDraft => ({
+  title: "ארוך",
+  scenes: Array.from({ length: 20 }, () => ({
+    script: Array.from({ length: 12 }, () => "מילה").join(" "),
+    visual: { kind: "graphic", prompt: "", motion: "none" },
+    overlays: [],
+    transitionOut: "cut",
+  })),
+});
+
+describe("length enforcement", () => {
+  it("asks Claude once to shorten an over-long storyboard and returns the fixed one", async () => {
+    const model = vi.fn<DraftModel>().mockResolvedValueOnce(reply(longDraft())).mockResolvedValueOnce(reply(draft()));
+    const sb = await createPlanner(model).plan(REQ);
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(model.mock.calls[1][0].user).toMatch(/at most 12 scenes \(you wrote 20\)/);
+    expect(sb.scenes).toHaveLength(2);
+  });
+
+  it("returns a still-long second answer instead of failing", async () => {
+    const model = vi.fn<DraftModel>(async () => reply(longDraft()));
+    const sb = await createPlanner(model).plan(REQ);
+    expect(model).toHaveBeenCalledTimes(2);
+    expect(sb.scenes).toHaveLength(20);
+  });
+
+  it("states hard limits in the prompt", () => {
+    expect(userPrompt(REQ)).toMatch(/Hard limits: at most 12 scenes and about 69 spoken words/);
+  });
+});
