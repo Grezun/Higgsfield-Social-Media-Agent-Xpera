@@ -39,4 +39,23 @@ describe("buildHandlers", () => {
     await expect(real.handlers.generate(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx)).rejects.toThrow(/fake-mode worker/);
     expect(real.providers.calls.voice + real.providers.calls.image + real.providers.calls.video).toBe(0);
   });
+
+  it("fake mode: the generate handler refuses a storyboard with a real voice", async () => {
+    const real = await setup("real");
+    await real.handlers.plan(makeJob({ type: "plan", project_id: "p1", payload: FORM }), ctx);
+    const record = real.db.storyboards[0];
+    record.status = "approved";
+    const fake = await setup("fake");
+    fake.db.storyboards.push(record);
+    await expect(fake.handlers.generate(makeJob({ type: "generate", project_id: "p1", payload: { storyboardId: record.id } }), ctx)).rejects.toThrow(/fake providers/);
+    expect(fake.providers.calls.voice + fake.providers.calls.image + fake.providers.calls.video).toBe(0);
+  });
+
+  it("real mode: the plan handler uses the form's voice, else the language default, never the fake voice", async () => {
+    const s = await setup("real");
+    await s.handlers.plan(makeJob({ type: "plan", project_id: "p1", payload: { ...FORM, voiceId: "chosen" } }), ctx);
+    await s.handlers.plan(makeJob({ type: "plan", project_id: "p2", payload: FORM }), ctx);
+    const voices = s.db.storyboards.map((r) => (r.json as { voice: { voiceId: string } }).voice.voiceId);
+    expect(voices).toEqual(["chosen", "voice-he"]);
+  });
 });
