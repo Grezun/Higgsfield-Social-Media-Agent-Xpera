@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { "./render": "./src/render.ts", "./sample": "./src/sample-timeline.ts" },
+  "exports": { "./render": "./src/render.ts", "./sample": "./src/sample-timeline.ts", "./reel": "./src/Reel.tsx" },
   "scripts": { "studio": "remotion studio src/index.ts" },
   "dependencies": {
     "@reel/core": "*",

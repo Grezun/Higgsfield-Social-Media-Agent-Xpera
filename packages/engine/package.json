@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/pipeline.ts" },
+  "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
     "@elevenlabs/elevenlabs-js": "^2.70.0",

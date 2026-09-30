@@ -1,3 +1,4 @@
+import type { PipelineEvent } from "@reel/core";
 import { parseStoryboard, SceneFailuresError, UnsupportedFormatError } from "@reel/core";
 import { makeTestImage, makeTestTone, makeTestVideo, probe } from "@reel/media";
 import { mkdtemp } from "node:fs/promises";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FileAssetStore } from "./asset-store";
 import { HiggsfieldImageGen, HiggsfieldVideoGen } from "./providers/higgsfield";
-import { generateAssets, hashes, renderAndExport, type PipelineDeps } from "./pipeline";
+import { buildTimeline, generateAssets, hashes, renderAndExport, type PipelineDeps } from "./pipeline";
 import { createFakeProviders } from "./providers/fake";
 import type { PlanRequest } from "./providers/types";
 
@@ -48,6 +49,42 @@ describe("pipeline (fake providers, real ffmpeg + Remotion)", () => {
     await generateAssets(sb, deps);
     expect(providers.calls).toEqual(before);
   }, 600_000);
+
+  it("emits step and scene events and builds asset-ref timelines", async () => {
+    const { dir, providers, deps } = await setup();
+    const events: PipelineEvent[] = [];
+    const sb = await providers.planner.plan(REQ);
+    const gen = await generateAssets(sb, { ...deps, onEvent: (e) => events.push(e) });
+    const kinds = events.map((e) => (e.type === "step" ? `${e.step}:${e.status}` : e.type === "scene" ? `${e.sceneId}:${e.status}` : e.type));
+    expect(kinds[0]).toBe("voice:running");
+    expect(kinds).toContain("voice:done");
+    expect(kinds).toContain("visuals:running");
+    expect(kinds).toContain("s1:running");
+    expect(kinds).toContain("s1:done");
+    expect(kinds).toContain("s2:done");
+    expect(kinds.at(-1)).toBe("visuals:done");
+    expect(kinds.some((k) => k.startsWith("s3:"))).toBe(false); // graphic scene has no asset work
+
+    const timeline = buildTimeline(sb, gen, (f) => `asset:${f}`);
+    expect(timeline.audio.voiceUrl).toBe(`asset:${gen.voice.fileName}`);
+    expect(timeline.clips.find((c) => c.sceneId === "s1")?.src).toBe(`asset:${gen.visuals.s1.asset.fileName}`);
+
+    const renderEvents: PipelineEvent[] = [];
+    await renderAndExport(sb, gen, { ...deps, onEvent: (e) => renderEvents.push(e) }, join(dir, "out-events"));
+    const steps = renderEvents.filter((e) => e.type === "step").map((e) => `${(e as { step: string }).step}:${(e as { status: string }).status}`);
+    expect(steps).toEqual(["render:running", "render:done", "export:running", "export:done"]);
+    expect(renderEvents.some((e) => e.type === "render-progress")).toBe(true);
+  }, 600_000);
+
+  it("emits a failed scene event with the reason", async () => {
+    const { providers, deps } = await setup("FAIL");
+    const sb = await providers.planner.plan(REQ);
+    sb.scenes[1].visual.prompt = "FAIL this prompt";
+    const events: PipelineEvent[] = [];
+    await generateAssets(sb, { ...deps, onEvent: (e) => events.push(e) }).catch(() => {});
+    expect(events).toContainEqual({ type: "scene", sceneId: "s2", status: "failed", reason: expect.stringMatching(/content moderation/) });
+    expect(events.some((e) => e.type === "step" && e.step === "visuals" && e.status === "done")).toBe(false);
+  }, 300_000);
 
   it("caches successful scenes and reports the failed one", async () => {
     const { providers, deps } = await setup("FAIL");

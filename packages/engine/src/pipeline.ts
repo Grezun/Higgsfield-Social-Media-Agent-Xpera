@@ -8,6 +8,7 @@ import {
   UnsupportedFormatError,
   videoBillSeconds,
   WordSchema,
+  type PipelineEvent,
   type SceneSpan,
   type Storyboard,
   type Timeline,
@@ -18,12 +19,18 @@ import { renderReel } from "@reel/video/render";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as z from "zod";
-import type { AssetMeta, FileAssetStore, StoredAsset } from "./asset-store";
+import type { AssetMeta, AssetStore, StoredAsset } from "./asset-store";
 import { contentTypeFor, downloadTo, extFromUrl } from "./download";
 import type { Providers, VoiceRequest } from "./providers/types";
 import { serveDir } from "./serve";
 
-export type PipelineDeps = { providers: Providers; store: FileAssetStore; tmpDir: string; log: (msg: string) => void };
+export type PipelineDeps = {
+  providers: Providers;
+  store: AssetStore;
+  tmpDir: string;
+  log: (msg: string) => void;
+  onEvent?: (event: PipelineEvent) => void;
+};
 export type GeneratedAssets = {
   voice: StoredAsset;
   words: Word[];
@@ -47,7 +54,7 @@ const estUsd = (model: string, key: "perImage" | "perSecond" | "per1kChars", qua
 };
 
 async function cached(
-  store: FileAssetStore,
+  store: AssetStore,
   hash: string,
   create: () => Promise<{ path: string; ext: string; meta: Omit<AssetMeta, "createdAt"> }>,
 ): Promise<StoredAsset> {
@@ -61,6 +68,7 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
   if (sb.format !== "faceless") throw new UnsupportedFormatError(sb.format);
   if (!sb.voice) throw new Error("A faceless storyboard needs a voice");
   const { providers: p, store, tmpDir, log } = deps;
+  const emit = (e: PipelineEvent) => deps.onEvent?.(e);
   await mkdir(tmpDir, { recursive: true });
   const tmp = (name: string) => join(tmpDir, name);
 
@@ -73,6 +81,7 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
     stability: sb.voice.stability,
     style: sb.voice.style,
   };
+  emit({ type: "step", step: "voice", status: "running" });
   const voice = await cached(store, hashes.voice(voiceReq), async () => {
     log("voice: synthesizing");
     const res = await p.voice.synthesize(voiceReq);
@@ -102,6 +111,8 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
   const words = z.array(WordSchema).parse(rawWords);
   const durationMs = Math.round((await probe(voice.path)).durationSec * 1000);
   const spans = sceneSpans(sb.scenes.map((s) => s.script), words, durationMs);
+  emit({ type: "step", step: "voice", status: "done" });
+  emit({ type: "step", step: "visuals", status: "running" });
 
   // 2. Visuals, all scenes in parallel (the Higgsfield gateway enforces the account concurrency limit).
   const visuals: GeneratedAssets["visuals"] = {};
@@ -111,6 +122,7 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
     sb.scenes.map(async (scene, i) => {
       const { kind, prompt } = scene.visual;
       if (kind === "graphic") return;
+      emit({ type: "scene", sceneId: scene.id, status: "running" });
       try {
         if (!prompt) throw new Error("missing visual prompt");
         const sceneSec = (spans[i].endMs - spans[i].startMs + (i === last ? DEFAULT_TAIL_MS : 0)) / 1000;
@@ -124,6 +136,7 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
         });
         if (kind === "image") {
           visuals[scene.id] = { kind: "image", asset: image };
+          emit({ type: "scene", sceneId: scene.id, status: "done" });
           return;
         }
         const billSec = videoBillSeconds(sceneSec);
@@ -153,13 +166,28 @@ export async function generateAssets(sb: Storyboard, deps: PipelineDeps): Promis
           return { path: out, ext: "mp4", meta: { kind: "video", provider: "ffmpeg" } };
         });
         visuals[scene.id] = { kind: "video", asset: fitted };
+        emit({ type: "scene", sceneId: scene.id, status: "done" });
       } catch (err) {
-        failures.push({ sceneId: scene.id, reason: err instanceof Error ? err.message : String(err) });
+        const reason = err instanceof Error ? err.message : String(err);
+        failures.push({ sceneId: scene.id, reason });
+        emit({ type: "scene", sceneId: scene.id, status: "failed", reason });
       }
     }),
   );
   if (failures.length) throw new SceneFailuresError(failures.sort((a, b) => a.sceneId.localeCompare(b.sceneId)));
+  emit({ type: "step", step: "visuals", status: "done" });
   return { voice, words, spans, visuals };
+}
+
+/** The Timeline for this storyboard + generated assets, with each asset file mapped through `urlFor`. */
+export function buildTimeline(sb: Storyboard, gen: GeneratedAssets, urlFor: (fileName: string) => string): Timeline {
+  return assemble({
+    storyboard: sb,
+    spans: gen.spans,
+    words: gen.words,
+    visuals: Object.fromEntries(Object.entries(gen.visuals).map(([id, v]) => [id, { kind: v.kind, src: urlFor(v.asset.fileName) }])),
+    voiceUrl: urlFor(gen.voice.fileName),
+  });
 }
 
 export async function renderAndExport(
@@ -172,20 +200,19 @@ export async function renderAndExport(
   await mkdir(outDir, { recursive: true });
   const server = await serveDir(deps.store.root);
   try {
-    const timeline = assemble({
-      storyboard: sb,
-      spans: gen.spans,
-      words: gen.words,
-      visuals: Object.fromEntries(
-        Object.entries(gen.visuals).map(([id, v]) => [id, { kind: v.kind, src: server.urlFor(v.asset.fileName) }]),
-      ),
-      voiceUrl: server.urlFor(gen.voice.fileName),
-    });
+    const emit = (e: PipelineEvent) => deps.onEvent?.(e);
+    const timeline = buildTimeline(sb, gen, server.urlFor);
     // Asset URLs in timeline.json point at the temporary local server and are only valid during this render.
     await writeFile(join(outDir, "timeline.json"), JSON.stringify(timeline, null, 2));
     const master = join(outDir, "master.mp4");
     deps.log("render: Remotion");
-    await renderReel(timeline, master, onProgress);
+    emit({ type: "step", step: "render", status: "running" });
+    await renderReel(timeline, master, (progress) => {
+      onProgress?.(progress);
+      emit({ type: "render-progress", progress });
+    });
+    emit({ type: "step", step: "render", status: "done" });
+    emit({ type: "step", step: "export", status: "running" });
     const reel = join(outDir, "reel.mp4");
     deps.log("export: social_1080p");
     await exportDeliverable(master, reel, "social_1080p");
@@ -193,6 +220,7 @@ export async function renderAndExport(
     await exportDeliverable(master, preview, "preview_540p");
     const thumb = join(outDir, "thumbnail.jpg");
     await thumbnail(master, thumb, Math.min(1, timeline.durationInFrames / 30 / 2));
+    emit({ type: "step", step: "export", status: "done" });
     return { timeline, master, reel, preview, thumbnail: thumb };
   } finally {
     await server.close();

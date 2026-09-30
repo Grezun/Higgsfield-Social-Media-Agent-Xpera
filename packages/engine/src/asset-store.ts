@@ -16,8 +16,15 @@ export type StoredAsset = { hash: string; fileName: string; path: string; meta: 
 
 const isNotFound = (err: unknown) => (err as NodeJS.ErrnoException)?.code === "ENOENT";
 
+/** Where the pipeline caches provider outputs. `root` is a local directory holding every returned `path`. */
+export interface AssetStore {
+  readonly root: string;
+  get(hash: string): Promise<StoredAsset | null>;
+  putFile(hash: string, sourcePath: string, ext: string, meta: Omit<AssetMeta, "createdAt">): Promise<StoredAsset>;
+}
+
 /** Content-addressed cache: <root>/<hash>.<ext> plus <root>/<hash>.json metadata. */
-export class FileAssetStore {
+export class FileAssetStore implements AssetStore {
   constructor(readonly root: string) {}
 
   async get(hash: string): Promise<StoredAsset | null> {
