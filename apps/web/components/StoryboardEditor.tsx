@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useReducer, useState, useTransition } from "react";
 import { approveStoryboardAction, editAsNewVersionAction, retryGenerateAction, saveStoryboardAction } from "@/app/projects/[id]/actions";
 import { checkStoryboard, editStoryboard, MAX_OVERLAYS, normalizeForSave } from "@/lib/storyboard-edit";
+import { describeLength } from "@/lib/length-view";
 
 const MOTIONS = ["none", "zoom_in", "zoom_out", "pan_left", "pan_right"] as const;
 const TRANSITIONS = ["cut", "fade", "whip", "zoom"] as const;
@@ -31,6 +32,7 @@ export function StoryboardEditor({ projectId, storyboardId, initial, editable, c
       return null;
     }
   }, [sb]);
+  const length = useMemo(() => describeLength(sb), [sb]);
 
   const act = (fn: () => Promise<{ ok: true } | { ok: false; errors: string[] }>) =>
     startTransition(async () => {
@@ -43,7 +45,10 @@ export function StoryboardEditor({ projectId, storyboardId, initial, editable, c
     <section className="stack">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>Storyboard v{sb.version}</h2>
-        <span className="muted">{estimate === null ? "Estimate unavailable" : `Estimated generation cost: $${estimate.toFixed(2)}`}</span>
+        <div className="column" style={{ alignItems: "flex-end", gap: "0.5em" }}>
+          <span className="muted">{estimate === null ? "Estimate unavailable" : `Estimated generation cost: $${estimate.toFixed(2)}`}</span>
+          <span className={length.tooLong ? "warn" : "muted"}>{length.text}</span>
+        </div>
       </div>
 
       {sb.scenes.map((scene, i) => (
