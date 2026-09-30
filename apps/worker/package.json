@@ -1,0 +1,13 @@
+{
+  "name": "@reel/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@reel/core": "*",
+    "@reel/db": "*",
+    "@reel/engine": "*",
+    "@reel/media": "*",
+    "@supabase/supabase-js": "2.117.2"
+  }
+}
