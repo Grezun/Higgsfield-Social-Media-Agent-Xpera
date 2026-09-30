@@ -23,7 +23,7 @@ export async function exportDeliverable(master: string, output: string, presetNa
   const p: ExportPreset = EXPORT_PRESETS[presetName];
   const info = await probe(master);
   const video = [
-    "-vf", `scale=${p.width}:${p.height},fps=30,format=yuv420p`,
+    "-vf", `scale=${p.width}:${p.height}:out_range=tv,fps=30,format=yuv420p`,
     "-c:v", "libx264", "-profile:v", "high", "-preset", p.preset, "-crf", String(p.crf),
     ...(p.maxrate && p.bufsize ? ["-maxrate", p.maxrate, "-bufsize", p.bufsize] : []),
   ];
