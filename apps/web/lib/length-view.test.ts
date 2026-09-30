@@ -20,4 +20,9 @@ describe("describeLength", () => {
     expect(view.tooLong).toBe(true);
     expect(view.text).toBe("Estimated length ≈ 26 s (target 15 s): too long; trim the voiceover or remove scenes.");
   });
+  it("warns when over the scene cap even if under time", () => {
+    const view = describeLength(sb(Array.from({ length: 7 }, () => words(2))));
+    expect(view.tooLong).toBe(true);
+    expect(view.text).toMatch(/^Estimated length ≈ \d+ s \(target 15 s\): too long; trim the voiceover or remove scenes\.$/);
+  });
 });

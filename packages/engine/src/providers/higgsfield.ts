@@ -2,7 +2,7 @@ import { PermanentProviderError } from "@reel/core";
 import { FETCH_TIMEOUT_MS } from "../download";
 import type { PendingStore } from "../pending-store";
 import { Semaphore, withRetry } from "../retry";
-import { HfHttpError, isAmbiguousSubmitError, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
+import { AmbiguousSubmitError, HfHttpError, isNetworkError, isAmbiguousSubmitError, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
 import type { GenResult, ImageGen, MediaUploader, VideoGen } from "./types";
 
 const TERMINAL = new Set(["completed", "failed", "nsfw", "canceled", "cancelled"]);
@@ -61,7 +61,12 @@ export class HiggsfieldGateway {
             });
           } catch (err) {
             if (isAmbiguousSubmitError(err)) {
-              throw new Error("Higgsfield submit timed out; the job may have been created — check the Higgsfield dashboard before retrying");
+              const msg = err instanceof AmbiguousSubmitError
+                ? err.message
+                : isNetworkError(err)
+                  ? "Higgsfield submit connection dropped; the job may have been created — check the Higgsfield dashboard before retrying"
+                  : "Higgsfield submit timed out; the job may have been created — check the Higgsfield dashboard before retrying";
+              throw new Error(msg, { cause: err });
             }
             throw err;
           }

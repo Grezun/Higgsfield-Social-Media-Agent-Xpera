@@ -179,6 +179,25 @@ describe("HiggsfieldGateway polling and resume", () => {
     expect(t.calls.submit).toBe(1);
   });
 
+  it("does not retry a submit that dropped mid-flight", async () => {
+    const reset = Object.assign(new Error("reset"), { code: "ECONNRESET" });
+    const { api, calls } = fakeApi({ submit: [async () => { throw reset; }] });
+    const err = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" }).catch((e) => e);
+    expect(err.message).toMatch(/may have been created/);
+    expect(err.cause).toBe(reset);
+    expect(calls.submit).toBe(1);
+  });
+
+  it("does not retry a 2xx submit without a request_id", async () => {
+    const fetchImpl = (async () => Response.json({ status: "queued" })) as typeof fetch;
+    const real = httpHiggsfieldApi("a:b", undefined, fetchImpl);
+    let n = 0;
+    const api = { ...real, submit: (m: string, i: Record<string, unknown>) => { n++; return real.submit(m, i); } };
+    const err = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" }).catch((e) => e);
+    expect(err.message).toMatch(/no request_id.*dashboard/);
+    expect(n).toBe(1);
+  });
+
   it("logs unexpected non-terminal statuses once", async () => {
     const logs: string[] = [];
     const weird = async (): Promise<HfStatus> => ({ status: "weird", request_id: "req-1" });
@@ -265,9 +284,12 @@ describe("httpHiggsfieldApi", () => {
     expect(isRetryableSubmitError(new HfHttpError(502, "x"))).toBe(true);
     expect(isRetryableSubmitError(new HfHttpError(429, "x"))).toBe(true);
     expect(isRetryableSubmitError(new HfHttpError(400, "Maximum number of concurrent requests"))).toBe(true);
-    expect(isRetryableSubmitError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isRetryableSubmitError(Object.assign(new Error("reset"), { code: "ECONNREFUSED" }))).toBe(true);
     expect(isRetryableSubmitError(Object.assign(new Error("dns"), { code: "ENOTFOUND" }))).toBe(true);
     expect(isRetryableSubmitError(Object.assign(new Error("ct"), { code: "UND_ERR_CONNECT_TIMEOUT" }))).toBe(true);
+    for (const code of ["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"]) {
+      expect(isRetryableSubmitError(Object.assign(new Error("x"), { code }))).toBe(false);
+    }
     expect(isRetryableSubmitError(new HfHttpError(504, "x"))).toBe(false);
     expect(isRetryableSubmitError(Object.assign(new Error("t"), { name: "TimeoutError" }))).toBe(false);
     expect(isRetryableSubmitError(new HfHttpError(422, "x"))).toBe(false);

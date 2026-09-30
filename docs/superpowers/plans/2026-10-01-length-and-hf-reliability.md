@@ -37,7 +37,7 @@
 - **Timeout:** when the wait times out, the pending record is **kept**, and the error says the request is still processing and gives the request ID. A retry resumes it.
 - **Finished requests:** on a terminal status (completed, failed, nsfw, canceled) the pending record is **deleted**. "Failed" then resubmits on a retry.
 - **Unknown request ID:** a status call returning 404 (the provider no longer knows the ID) deletes the pending record and submits fresh.
-- **Pending store location:** local JSON files under `<cacheDir>/pending/` (fake mode: `<cacheDir>/fake/pending/`). This covers a single worker machine. Mirroring to Supabase is a Phase 5 item.
+- **Pending store location:** local JSON files under `<cacheDir>/pending/`. This covers a single worker machine. Mirroring to Supabase is a Phase 5 item.
 - **Secrets:** the Higgsfield credentials are never logged.
 
 ## Review Focus

@@ -27,7 +27,7 @@ const blobs = new SupabaseBlobStore(sb);
 const handlers = buildHandlers({
   mode: fake ? "fake" : "real",
   planner: createPlannerFor(config, workDir),
-  providers: createProviders(config, workDir),
+  providers: createProviders(config, workDir, { log }),
   store: new MirroredAssetStore(new FileAssetStore(fake ? join(config.cacheDir, "fake") : config.cacheDir), blobs, new SupabaseAssetIndex(sb), log),
   blobs,
   db: new SupabaseReelDb(sb),

@@ -45,7 +45,7 @@ export function StoryboardEditor({ projectId, storyboardId, initial, editable, c
     <section className="stack">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>Storyboard v{sb.version}</h2>
-        <div className="column" style={{ alignItems: "flex-end", gap: "0.5em" }}>
+        <div className="stack" style={{ alignItems: "flex-end", gap: "0.5em" }}>
           <span className="muted">{estimate === null ? "Estimate unavailable" : `Estimated generation cost: $${estimate.toFixed(2)}`}</span>
           <span className={length.tooLong ? "warn" : "muted"}>{length.text}</span>
         </div>
