@@ -2,7 +2,7 @@ import { PermanentProviderError } from "@reel/core";
 import { FETCH_TIMEOUT_MS } from "../download";
 import type { PendingStore } from "../pending-store";
 import { Semaphore, withRetry } from "../retry";
-import { HfHttpError, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
+import { HfHttpError, isAmbiguousSubmitError, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
 import type { GenResult, ImageGen, MediaUploader, VideoGen } from "./types";
 
 const TERMINAL = new Set(["completed", "failed", "nsfw", "canceled", "cancelled"]);
@@ -16,35 +16,71 @@ export class HiggsfieldGateway {
     this.semaphore = new Semaphore(concurrency);
   }
 
-  async run(model: string, input: Record<string, unknown>, pick: (r: HfStatus) => string | undefined, run: { resumeKey?: string; maxWaitMs: number }): Promise<GenResult> {
+  private readonly inflight = new Map<string, Promise<GenResult>>();
+
+  run(model: string, input: Record<string, unknown>, pick: (r: HfStatus) => string | undefined, run: { resumeKey?: string; maxWaitMs: number }): Promise<GenResult> {
+    const key = run.resumeKey;
+    if (!key) return this.execute(model, input, pick, run);
+    const existing = this.inflight.get(key);
+    if (existing) return existing;
+    const p = this.execute(model, input, pick, run).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, p);
+    return p;
+  }
+
+  private async execute(model: string, input: Record<string, unknown>, pick: (r: HfStatus) => string | undefined, run: { resumeKey?: string; maxWaitMs: number }): Promise<GenResult> {
     const sleep = this.opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     const now = this.opts.now ?? Date.now;
     const log = this.opts.log ?? (() => {});
+    const bestEffort = async (what: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+      } catch (err) {
+        log(`pending store ${what} failed (continuing): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
     return this.semaphore.run(async () => {
       let requestId: string | null = null;
-      const resumed = run.resumeKey ? await this.pending.get(run.resumeKey) : null;
+      let fromStore = false;
+      let resubmittedAfterUnknown = false;
+      const resumed = run.resumeKey ? await this.pending.get(run.resumeKey).catch((err) => { log(`pending store get failed (continuing): ${err instanceof Error ? err.message : String(err)}`); return null; }) : null;
       if (resumed) {
         requestId = resumed.requestId;
+        fromStore = true;
         log(`resuming Higgsfield request ${requestId} instead of submitting again`);
       }
+      const seenStatuses = new Set<string>();
       for (;;) {
         if (!requestId) {
-          requestId = await withRetry(() => this.api.submit(model, input), {
-            attempts: 4,
-            baseDelayMs: this.opts.submitBaseDelayMs ?? 5000,
-            isTransient: isRetryableSubmitError,
-            sleep,
-          });
-          if (run.resumeKey) await this.pending.set(run.resumeKey, { requestId, model, submittedAt: new Date(now()).toISOString() });
+          try {
+            requestId = await withRetry(() => this.api.submit(model, input), {
+              attempts: 4,
+              baseDelayMs: this.opts.submitBaseDelayMs ?? 5000,
+              isTransient: isRetryableSubmitError,
+              sleep,
+            });
+          } catch (err) {
+            if (isAmbiguousSubmitError(err)) {
+              throw new Error("Higgsfield submit timed out; the job may have been created — check the Higgsfield dashboard before retrying");
+            }
+            throw err;
+          }
+          fromStore = false;
+          if (run.resumeKey) {
+            const rec = { requestId, model, submittedAt: new Date(now()).toISOString() };
+            await bestEffort("set", () => this.pending.set(run.resumeKey!, rec));
+          }
         }
-        const result = await this.waitFor(requestId, run.maxWaitMs, sleep, now);
+        // A 404 means "unknown id" only for a stored id, and only once per run.
+        const result = await this.waitFor(requestId, run.maxWaitMs, sleep, now, fromStore && !resubmittedAfterUnknown, seenStatuses, log);
         if (result === "unknown") {
-          // The provider no longer knows this id: forget it and submit fresh.
-          if (run.resumeKey) await this.pending.delete(run.resumeKey);
+          if (run.resumeKey) await bestEffort("delete", () => this.pending.delete(run.resumeKey!));
           requestId = null;
+          fromStore = false;
+          resubmittedAfterUnknown = true;
           continue;
         }
-        if (run.resumeKey) await this.pending.delete(run.resumeKey);
+        if (run.resumeKey) await bestEffort("delete", () => this.pending.delete(run.resumeKey!));
         const status: string = result.status;
         const url = pick(result);
         if (status === "completed" && url) return { url, requestId };
@@ -57,16 +93,28 @@ export class HiggsfieldGateway {
     });
   }
 
-  private async waitFor(requestId: string, maxWaitMs: number, sleep: (ms: number) => Promise<void>, now: () => number): Promise<HfStatus | "unknown"> {
+  private async waitFor(
+    requestId: string,
+    maxWaitMs: number,
+    sleep: (ms: number) => Promise<void>,
+    now: () => number,
+    notFoundMeansUnknown: boolean,
+    seenStatuses: Set<string>,
+    log: (m: string) => void,
+  ): Promise<HfStatus | "unknown"> {
     const deadline = now() + maxWaitMs;
     for (;;) {
       try {
         const s = await this.api.status(requestId);
         if (TERMINAL.has(s.status)) return s;
+        if (!["queued", "in_progress"].includes(s.status) && !seenStatuses.has(s.status)) {
+          seenStatuses.add(s.status);
+          log(`Higgsfield request ${requestId} reported unexpected status "${s.status}"; still waiting`);
+        }
       } catch (err) {
-        if (err instanceof HfHttpError && err.status === 404) return "unknown";
-        // Status polling is read-only: tolerate 5xx, timeouts and network errors.
-        const tolerable = (err instanceof HfHttpError && (err.status >= 500 || err.status === 429)) || !(err instanceof HfHttpError);
+        if (err instanceof HfHttpError && err.status === 404 && notFoundMeansUnknown) return "unknown";
+        // Status polling is read-only: tolerate 404 (id not yet visible), 5xx, 429, timeouts and network errors.
+        const tolerable = (err instanceof HfHttpError && (err.status >= 500 || err.status === 429 || err.status === 404)) || !(err instanceof HfHttpError);
         if (!tolerable) throw err;
       }
       if (now() >= deadline) {

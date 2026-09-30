@@ -15,19 +15,24 @@ export interface HiggsfieldApi {
   status(requestId: string): Promise<HfStatus>;
 }
 
-const NETWORK_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET"]);
+const NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
+/** Connection-level failures where the request provably never reached the server. */
 export const isNetworkError = (err: unknown) =>
-  NETWORK_CODES.has((err as { code?: string; cause?: { code?: string } } | null)?.code ?? (err as { cause?: { code?: string } } | null)?.cause?.code ?? "") ||
-  (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"));
+  NETWORK_CODES.has((err as { code?: string; cause?: { code?: string } } | null)?.code ?? (err as { cause?: { code?: string } } | null)?.cause?.code ?? "");
+
+/** A submit that timed out may still have created (and billed) a job, so it must not be retried. */
+export const isAmbiguousSubmitError = (err: unknown) =>
+  (err instanceof HfHttpError && err.status === 504) || (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"));
 
 /** A submit that failed before a job existed is safe to retry. */
 export function isRetryableSubmitError(err: unknown): boolean {
-  if (err instanceof HfHttpError) return err.status === 429 || err.status >= 500 || (err.status === 400 && /concurrent/i.test(err.message));
+  if (err instanceof HfHttpError) return err.status === 429 || (err.status >= 500 && err.status !== 504) || (err.status === 400 && /concurrent/i.test(err.message));
   return isNetworkError(err);
 }
 
 export function httpHiggsfieldApi(credentials: string, baseUrl = "https://api.higgsfield.ai", fetchImpl: typeof fetch = fetch): HiggsfieldApi {
-  const headers = { Authorization: `Key ${credentials}`, "Content-Type": "application/json", Accept: "application/json" };
+  const root = baseUrl.replace(/\/+$/, "");
+  const headers = { "User-Agent": "reel-agent/1.0", Authorization: `Key ${credentials}`, "Content-Type": "application/json", Accept: "application/json" };
   const call = async (url: string, init: RequestInit) => {
     const res = await fetchImpl(url, { ...init, headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     const text = await res.text();
@@ -36,10 +41,10 @@ export function httpHiggsfieldApi(credentials: string, baseUrl = "https://api.hi
   };
   return {
     async submit(model, input) {
-      const body = await call(`${baseUrl}/${model}`, { method: "POST", body: JSON.stringify(input) });
+      const body = await call(`${root}/${model}`, { method: "POST", body: JSON.stringify(input) });
       if (!body.request_id) throw new HfHttpError(502, "Higgsfield submit returned no request_id");
       return body.request_id;
     },
-    status: (requestId) => call(`${baseUrl}/requests/${encodeURIComponent(requestId)}/status`, { method: "GET" }),
+    status: (requestId) => call(`${root}/requests/${encodeURIComponent(requestId)}/status`, { method: "GET" }),
   };
 }

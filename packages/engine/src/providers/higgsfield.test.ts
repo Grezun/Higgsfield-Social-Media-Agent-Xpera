@@ -1,6 +1,6 @@
 import { PermanentProviderError } from "@reel/core";
 import { describe, expect, it, vi } from "vitest";
-import { MemoryPendingStore } from "../pending-store";
+import { MemoryPendingStore, type PendingStore } from "../pending-store";
 import { HfHttpError, httpHiggsfieldApi, isRetryableSubmitError, type HfStatus, type HiggsfieldApi } from "./higgsfield-api";
 import { HiggsfieldGateway, HiggsfieldImageGen, HiggsfieldUploader, HiggsfieldVideoGen } from "./higgsfield";
 
@@ -130,6 +130,63 @@ describe("HiggsfieldGateway polling and resume", () => {
     expect(pending.records.size).toBe(0);
   });
 
+  it("tolerates 404 on an id this run submitted itself (no resubmit)", async () => {
+    const { api, calls } = fakeApi({
+      statuses: { "req-1": [async () => { throw new HfHttpError(404, "nf"); }, async () => { throw new HfHttpError(404, "nf"); }, completedImg()] },
+    });
+    const res = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x", resumeKey: "k" });
+    expect(res.requestId).toBe("req-1");
+    expect(calls.submit).toBe(1);
+  });
+
+  it("resubmits at most once when a resumed id is unknown", async () => {
+    const nf = async (): Promise<HfStatus> => { throw new HfHttpError(404, "nf"); };
+    const { api, calls } = fakeApi({ statuses: { "req-9": [nf], "req-1": [nf, nf, nf, completedImg()] } });
+    const pending = new MemoryPendingStore();
+    await pending.set("k", { requestId: "req-9", model: IMG, submittedAt: "2026-10-01T00:00:00.000Z" });
+    const res = await new HiggsfieldImageGen(make(api, pending)).generate({ prompt: "x", resumeKey: "k" });
+    expect(res.requestId).toBe("req-1");
+    expect(calls.submit).toBe(1);
+  });
+
+  it("dedupes concurrent runs with the same resumeKey", async () => {
+    const { api, calls } = fakeApi({ statuses: { "req-1": [inProgress, completedImg()] } });
+    const gen = new HiggsfieldImageGen(make(api));
+    const [a, b] = await Promise.all([gen.generate({ prompt: "x", resumeKey: "k" }), gen.generate({ prompt: "x", resumeKey: "k" })]);
+    expect(calls.submit).toBe(1);
+    expect(a.url).toBe(b.url);
+  });
+
+  it("pending store failures are best-effort", async () => {
+    const boom = async () => { throw new Error("disk full"); };
+    const store: PendingStore = { get: async () => null, set: boom, delete: boom };
+    const logs: string[] = [];
+    const { api, calls } = fakeApi({ statuses: { "req-1": [completedImg()] } });
+    const res = await new HiggsfieldImageGen(make(api, store as unknown as MemoryPendingStore, 1, { log: (m) => logs.push(m) })).generate({ prompt: "x", resumeKey: "k" });
+    expect(res.requestId).toBe("req-1");
+    expect(calls.submit).toBe(1);
+    expect(logs.length).toBeGreaterThan(0);
+  });
+
+  it("does not retry an ambiguous submit timeout", async () => {
+    const { api, calls } = fakeApi({ submit: [async () => { throw new HfHttpError(504, "gateway timeout"); }] });
+    const err = await new HiggsfieldImageGen(make(api)).generate({ prompt: "x" }).catch((e) => e);
+    expect(err.message).toMatch(/submit timed out; the job may have been created/);
+    expect(err).not.toBeInstanceOf(PermanentProviderError);
+    expect(calls.submit).toBe(1);
+    const t = fakeApi({ submit: [async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); }] });
+    await expect(new HiggsfieldImageGen(make(t.api)).generate({ prompt: "x" })).rejects.toThrow(/job may have been created/);
+    expect(t.calls.submit).toBe(1);
+  });
+
+  it("logs unexpected non-terminal statuses once", async () => {
+    const logs: string[] = [];
+    const weird = async (): Promise<HfStatus> => ({ status: "weird", request_id: "req-1" });
+    const { api } = fakeApi({ statuses: { "req-1": [weird, weird, completedImg()] } });
+    await new HiggsfieldImageGen(make(api, undefined, 1, { log: (m) => logs.push(m) })).generate({ prompt: "x" });
+    expect(logs.filter((l) => /weird/.test(l))).toHaveLength(1);
+  });
+
   it("terminal failure clears pending so the next run submits fresh", async () => {
     const { api, calls } = fakeApi({ statuses: { "req-1": [withStatus("failed"), completedImg()] } });
     const pending = new MemoryPendingStore();
@@ -182,6 +239,14 @@ describe("httpHiggsfieldApi", () => {
     expect(JSON.parse(init.body as string)).toEqual({ prompt: "a" });
   });
 
+  it("strips trailing slashes from baseUrl and sends a User-Agent", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ status: "in_progress", request_id: "r" }));
+    await httpHiggsfieldApi("a:b", "https://api.higgsfield.ai//", fetchImpl as unknown as typeof fetch).status("r");
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.higgsfield.ai/requests/r/status");
+    expect((init.headers as Record<string, string>)["User-Agent"]).toBe("reel-agent/1.0");
+  });
+
   it("GETs status from /requests/{id}/status", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ status: "in_progress", request_id: "req-1" }));
     const api = httpHiggsfieldApi("id:secret", "https://api.higgsfield.ai", fetchImpl as unknown as typeof fetch);
@@ -201,6 +266,10 @@ describe("httpHiggsfieldApi", () => {
     expect(isRetryableSubmitError(new HfHttpError(429, "x"))).toBe(true);
     expect(isRetryableSubmitError(new HfHttpError(400, "Maximum number of concurrent requests"))).toBe(true);
     expect(isRetryableSubmitError(Object.assign(new Error("reset"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isRetryableSubmitError(Object.assign(new Error("dns"), { code: "ENOTFOUND" }))).toBe(true);
+    expect(isRetryableSubmitError(Object.assign(new Error("ct"), { code: "UND_ERR_CONNECT_TIMEOUT" }))).toBe(true);
+    expect(isRetryableSubmitError(new HfHttpError(504, "x"))).toBe(false);
+    expect(isRetryableSubmitError(Object.assign(new Error("t"), { name: "TimeoutError" }))).toBe(false);
     expect(isRetryableSubmitError(new HfHttpError(422, "x"))).toBe(false);
     expect(isRetryableSubmitError(new HfHttpError(400, "prompt required"))).toBe(false);
   });
