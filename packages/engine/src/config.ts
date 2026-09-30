@@ -1,6 +1,7 @@
 import { config as loadDotenv } from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_MODELS } from "@reel/core";
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -43,14 +44,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: { pr
     higgsfield: {
       credentials: env.HF_CREDENTIALS || undefined,
       concurrency,
-      imageModel: "higgsfield-ai/soul/v2/standard",
-      videoModel: "bytedance/seedance-2.5/image-to-video",
+      imageModel: DEFAULT_MODELS.image,
+      videoModel: DEFAULT_MODELS.video,
       videoResolution: resolution as EngineConfig["higgsfield"]["videoResolution"],
       baseUrl: env.HF_BASE_URL ?? "https://api.higgsfield.ai",
     },
     elevenlabs: {
       apiKey: env.ELEVENLABS_API_KEY || undefined,
-      modelId: env.ELEVENLABS_MODEL_ID ?? "eleven_v4",
+      modelId: env.ELEVENLABS_MODEL_ID ?? DEFAULT_MODELS.voiceModelId,
       voices: { he: env.ELEVENLABS_VOICE_HE || undefined, en: env.ELEVENLABS_VOICE_EN || undefined },
     },
   };

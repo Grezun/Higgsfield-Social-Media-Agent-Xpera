@@ -13,5 +13,5 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "packages/*/scripts", "vitest.config.ts"]
+  "include": ["packages/*/src", "packages/*/scripts", "apps/worker/src", "apps/worker/scripts", "vitest.config.ts"]
 }
