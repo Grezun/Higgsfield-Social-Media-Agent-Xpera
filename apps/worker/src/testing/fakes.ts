@@ -1,5 +1,7 @@
 import type { JobProgress, JobRow } from "@reel/db";
+import { readFile, writeFile } from "node:fs/promises";
 import type { JobOutcome, JobQueue } from "../queue";
+import type { AssetIndex, AssetRecord, BlobStore } from "../storage";
 
 export function makeJob(partial: Partial<JobRow> = {}): JobRow {
   return {
@@ -62,5 +64,29 @@ export class FakeJobQueue implements JobQueue {
     const job = this.jobs.find((j) => j.id === jobId);
     if (job) Object.assign(job, { status: outcome.status, locked_by: null });
     return true;
+  }
+}
+
+export class InMemoryBlobStore implements BlobStore {
+  readonly objects = new Map<string, Buffer>();
+  async upload(bucket: string, path: string, filePath: string) {
+    this.objects.set(`${bucket}/${path}`, await readFile(filePath));
+  }
+  async download(bucket: string, path: string, destPath: string) {
+    const data = this.objects.get(`${bucket}/${path}`);
+    if (!data) throw new Error(`object not found: ${bucket}/${path}`);
+    await writeFile(destPath, data);
+  }
+}
+
+export class InMemoryAssetIndex implements AssetIndex {
+  readonly records = new Map<string, AssetRecord>();
+  finds = 0;
+  async find(hash: string) {
+    this.finds++;
+    return this.records.get(hash) ?? null;
+  }
+  async insert(record: AssetRecord) {
+    if (!this.records.has(record.inputHash)) this.records.set(record.inputHash, record);
   }
 }
